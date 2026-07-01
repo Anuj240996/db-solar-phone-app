@@ -18,8 +18,8 @@ if (-not (Test-Path $PhoneAppRepo)) {
 
 Write-Host "=== Sync backend -> db-solar-phone-app ===" -ForegroundColor Cyan
 robocopy $BackendRoot $PhoneAppRepo /E `
-    /XD node_modules uploads .git .dart_tool .idea `
-    /XF .env backend-deploy.zip `
+    /XD node_modules uploads .git .dart_tool .idea assets `
+    /XF .env backend-deploy.zip .metadata `
     /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
 if ($LASTEXITCODE -ge 8) {
     Write-Error "robocopy failed with exit code $LASTEXITCODE"
