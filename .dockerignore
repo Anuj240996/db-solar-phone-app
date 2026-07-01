@@ -3,7 +3,6 @@ npm-debug.log
 .env
 .env.*
 !.env.example
+scripts
 *.md
 .git
-backend-deploy.zip
-uploads
