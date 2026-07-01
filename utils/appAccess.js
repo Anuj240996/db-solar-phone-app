@@ -369,7 +369,40 @@ async function resolveCustomerFields(appOwnerId, linkedAuthIds, custId, req = nu
   if (!custId) {
     throw new Error('Please select a consumer');
   }
-  const c = await loadCustomerForApp(custId, appOwnerId, linkedAuthIds, req, ctx);
+  const custN = parseInt(custId, 10);
+  if (isNaN(custN)) {
+    throw new Error('Invalid consumer');
+  }
+
+  let c = await loadCustomerForApp(custId, appOwnerId, linkedAuthIds, req, ctx);
+
+  // Match GET /api/projects: linked JOIN + owner auth ids (not only new_customer_id filter).
+  if (!c && req && ctx) {
+    const linkAppUserId = await resolveLinkAppUserId(req);
+    if (isUserAppSession(req) && linkAppUserId) {
+      const joined = await queryLinkedCustomersForAppUser(linkAppUserId);
+      if (joined?.length) {
+        c = joined.find((row) => parseInt(row.cust_id, 10) === custN) || null;
+      }
+      if (!c && (await isCustomerLinkedToAppUser(linkAppUserId, custN))) {
+        const row = await pool.query(
+          `SELECT cust_id, comp_name, first_name, last_name, consumer, phone, city, new_customer_id
+           FROM customer WHERE cust_id = $1 LIMIT 1`,
+          [custN]
+        );
+        c = row.rows[0] || null;
+      }
+    }
+    if (!c) {
+      const ownerAuthIds = getProjectOwnerAuthIds(req, ctx);
+      if (ownerAuthIds.length) {
+        const { queryCustomersByOwnerAuthIds } = require('./projectBuilders');
+        const rows = await queryCustomersByOwnerAuthIds(ownerAuthIds);
+        c = rows.find((row) => parseInt(row.cust_id, 10) === custN) || null;
+      }
+    }
+  }
+
   if (!c) {
     throw new Error('Consumer not linked to your app account');
   }

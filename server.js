@@ -48,17 +48,33 @@ app.use('/api/growatt', require('./routes/growatt'));
 app.use('/api/notifications', require('./routes/notifications'));
 
 // Health check — apiVersion confirms phone-app has project-link + QR routes deployed
-const API_VERSION = '1.2.2';
+const API_VERSION = '1.2.3';
 
 async function runStartupMigrations() {
   try {
     const { ensureLeadsLeadSchema } = require('./utils/ensureLeadsLeadSchema');
     const { ensureSupportSchema } = require('./utils/ensureSupportSchema');
+    const pool = require('./database/db');
     await ensureLeadsLeadSchema();
     await ensureSupportSchema();
-    await require('./database/db').query(
+    await pool.query(
       `ALTER TABLE firereport_firereport ALTER COLUMN assignby DROP NOT NULL`
     ).catch(() => {});
+    await pool.query(
+      `ALTER TABLE firereport_servicerequest ALTER COLUMN assignby DROP NOT NULL`
+    ).catch(() => {});
+    await pool.query(
+      `ALTER TABLE firereport_servicerequest ADD COLUMN IF NOT EXISTS service_type TEXT`
+    );
+    await pool.query(
+      `ALTER TABLE firereport_servicerequest ADD COLUMN IF NOT EXISTS additional_notes TEXT`
+    );
+    await pool.query(
+      `ALTER TABLE firereport_servicerequest ADD COLUMN IF NOT EXISTS warranty_type TEXT`
+    );
+    await pool.query(
+      `ALTER TABLE firereport_servicerequest ADD COLUMN IF NOT EXISTS app_user_id INTEGER`
+    );
     console.log('Startup DB migrations OK');
   } catch (e) {
     console.error('Startup DB migrations failed:', e.message);

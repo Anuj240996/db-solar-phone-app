@@ -506,13 +506,16 @@ router.post('/', authenticate, async (req, res) => {
       appUserId = await resolveAppUserIdForConsumerAuth(authUserId);
     }
     const accountId = authUserId;
+    if (!accountId || isNaN(accountId)) {
+      return res.status(400).json({ message: 'Consumer has no linked account' });
+    }
     console.log('👤 Service app_user_id (user_app):', appUserId);
 
     await ensureServiceRequestSchema();
 
-    const postingDate = new Date().toISOString();
+    const postingDate = new Date();
     const status = 'Pending';
-    const assignBy = authUserId ?? accountId;
+    const assignBy = authUserId;
 
     const insertResult = await pool.query(
       `INSERT INTO ${TABLE_REQUEST}
@@ -520,11 +523,11 @@ router.post('/', authenticate, async (req, res) => {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING id`,
       [
-        fullName,
-        mobileNumber,
-        location,
+        fullName || 'NA',
+        mobileNumber || '0',
+        location || '',
         legacyMessage,
-        serviceType || null,
+        serviceType || legacyMessage,
         additionalNotes || null,
         warrantyType,
         status,
