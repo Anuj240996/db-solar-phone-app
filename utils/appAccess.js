@@ -365,52 +365,8 @@ function mapCustomerRowToFields(c) {
   };
 }
 
-async function resolveCustomerFields(appOwnerId, linkedAuthIds, custId, req = null, ctx = null) {
-  if (!custId) {
-    throw new Error('Please select a consumer');
-  }
-  const custN = parseInt(custId, 10);
-  if (isNaN(custN)) {
-    throw new Error('Invalid consumer');
-  }
-
-  let c = await loadCustomerForApp(custId, appOwnerId, linkedAuthIds, req, ctx);
-
-  // Match GET /api/projects: linked JOIN + owner auth ids (not only new_customer_id filter).
-  if (!c && req && ctx) {
-    const linkAppUserId = await resolveLinkAppUserId(req);
-    if (isUserAppSession(req) && linkAppUserId) {
-      const joined = await queryLinkedCustomersForAppUser(linkAppUserId);
-      if (joined?.length) {
-        c = joined.find((row) => parseInt(row.cust_id, 10) === custN) || null;
-      }
-      if (!c && (await isCustomerLinkedToAppUser(linkAppUserId, custN))) {
-        const row = await pool.query(
-          `SELECT cust_id, comp_name, first_name, last_name, consumer, phone, city, new_customer_id
-           FROM customer WHERE cust_id = $1 LIMIT 1`,
-          [custN]
-        );
-        c = row.rows[0] || null;
-      }
-    }
-    if (!c) {
-      const ownerAuthIds = getProjectOwnerAuthIds(req, ctx);
-      if (ownerAuthIds.length) {
-        const { queryCustomersByOwnerAuthIds } = require('./projectBuilders');
-        const rows = await queryCustomersByOwnerAuthIds(ownerAuthIds);
-        c = rows.find((row) => parseInt(row.cust_id, 10) === custN) || null;
-      }
-    }
-  }
-
-  if (!c) {
-    throw new Error('Consumer not linked to your app account');
-  }
-  return mapCustomerRowToFields(c);
-}
-
-/** Same project/customer resolution as GET /api/projects — used when cust_id is omitted. */
-async function resolveDefaultCustomerFields(req, ctx) {
+/** Same customer rows as GET /api/projects (dropdown list). */
+async function loadProjectCustomersForSession(req, ctx) {
   const linkAppUserId = await resolveLinkAppUserId(req);
   let customerRows = [];
 
@@ -426,6 +382,54 @@ async function resolveDefaultCustomerFields(req, ctx) {
       customerRows = await queryCustomersByOwnerAuthIds(ownerAuthIds);
     }
   }
+
+  return customerRows;
+}
+
+async function resolveCustomerFields(appOwnerId, linkedAuthIds, custId, req = null, ctx = null) {
+  if (!custId) {
+    throw new Error('Please select a consumer');
+  }
+  const custN = parseInt(custId, 10);
+  if (isNaN(custN)) {
+    throw new Error('Invalid consumer');
+  }
+
+  let c = null;
+
+  // Prefer the exact same project list the app shows in the consumer dropdown.
+  if (req && ctx) {
+    const projectRows = await loadProjectCustomersForSession(req, ctx);
+    c = projectRows.find((row) => parseInt(row.cust_id, 10) === custN) || null;
+  }
+
+  if (!c) {
+    c = await loadCustomerForApp(custId, appOwnerId, linkedAuthIds, req, ctx);
+  }
+
+  if (!c && req && ctx) {
+    const linkAppUserId = await resolveLinkAppUserId(req);
+    if (isUserAppSession(req) && linkAppUserId) {
+      if (await isCustomerLinkedToAppUser(linkAppUserId, custN)) {
+        const row = await pool.query(
+          `SELECT cust_id, comp_name, first_name, last_name, consumer, phone, city, new_customer_id
+           FROM customer WHERE cust_id = $1 LIMIT 1`,
+          [custN]
+        );
+        c = row.rows[0] || null;
+      }
+    }
+  }
+
+  if (!c) {
+    throw new Error('Consumer not linked to your app account');
+  }
+  return mapCustomerRowToFields(c);
+}
+
+/** Same project/customer resolution as GET /api/projects — used when cust_id is omitted. */
+async function resolveDefaultCustomerFields(req, ctx) {
+  const customerRows = await loadProjectCustomersForSession(req, ctx);
 
   if (!customerRows.length) {
     throw new Error('Customer data not found');
@@ -451,6 +455,7 @@ module.exports = {
   resolveAuthUserIdFromReq,
   loadCustomerForApp,
   resolveAuthUserIdFromCustId,
+  loadProjectCustomersForSession,
   resolveCustomerFields,
   resolveDefaultCustomerFields,
   mapCustomerRowToFields,

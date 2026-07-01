@@ -53,6 +53,32 @@ async function main() {
     }
   }
 
+  const cnt2 = await pool.query('SELECT COUNT(*)::int n, MIN(id) min, MAX(id) max FROM firereport_servicerequest');
+  console.log('service rows:', cnt2.rows[0]);
+
+  // Simulate OLD VPS 1.2.1 insert (MAX id + 1)
+  try {
+    const maxId = await pool.query(`SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM firereport_servicerequest`);
+    const nextId = maxId.rows[0].next_id;
+    await pool.query('BEGIN');
+    await pool.query(
+      `INSERT INTO firereport_servicerequest
+        (id, fullname, mobilenumber, "Location", message, service_type, additional_notes, warranty_type, status, postingdate, account_id, assignby, app_user_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      [nextId, 'Gamma Engineering Pvt Ltd', '9890652899', 'Waluj', 'Inverter service / fault', 'Inverter service / fault', 'ff', 'Annual maintenance service (AMC)', 'Pending', new Date(), 30, 30, null]
+    );
+    console.log('OLD style insert OK id:', nextId);
+    await pool.query('ROLLBACK');
+  } catch (e) {
+    await pool.query('ROLLBACK');
+    console.log('OLD style insert FAIL:', e.message);
+  }
+
+  const triggers = await pool.query(
+    `SELECT tgname FROM pg_trigger WHERE tgrelid = 'firereport_servicerequest'::regclass AND NOT tgisinternal`
+  );
+  console.log('triggers:', triggers.rows.map((r) => r.tgname));
+
   await pool.end();
 }
 

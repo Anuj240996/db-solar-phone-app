@@ -48,7 +48,8 @@ app.use('/api/growatt', require('./routes/growatt'));
 app.use('/api/notifications', require('./routes/notifications'));
 
 // Health check — apiVersion confirms phone-app has project-link + QR routes deployed
-const API_VERSION = '1.2.3';
+const API_VERSION = '1.2.4';
+const BUILD_STAMP = process.env.BUILD_STAMP || 'local';
 
 async function runStartupMigrations() {
   try {
@@ -81,16 +82,28 @@ async function runStartupMigrations() {
   }
 }
 
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
+  let database = null;
+  try {
+    const pool = require('./database/db');
+    const dbRes = await pool.query('SELECT current_database() AS db');
+    database = dbRes.rows[0]?.db || null;
+  } catch (e) {
+    database = `error: ${e.message}`;
+  }
+
   res.json({
     status: 'ok',
     message: 'DB Solar API is running',
     apiVersion: API_VERSION,
+    buildStamp: BUILD_STAMP,
+    database,
     features: {
       importFromQr: true,
       verifyFetchProjects: true,
       linkedProjectList: true,
       services: true,
+      serviceCreateDynamicInsert: true,
     },
   });
 });

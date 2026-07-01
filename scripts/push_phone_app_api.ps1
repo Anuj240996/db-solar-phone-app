@@ -25,6 +25,11 @@ if ($LASTEXITCODE -ge 8) {
     Write-Error "robocopy failed with exit code $LASTEXITCODE"
 }
 
+# Force Easypanel Docker rebuild when API changes
+$bust = Get-Date -Format 'yyyyMMddHHmmss'
+Set-Content -Path (Join-Path $PhoneAppRepo ".cache-bust") -Value $bust -Encoding ASCII
+Write-Host "Cache bust: $bust" -ForegroundColor DarkGray
+
 # Keep phone-app package identity (do not use db-solar-backend name from monorepo)
 $pkgPath = Join-Path $PhoneAppRepo "package.json"
 $pkg = Get-Content $pkgPath -Raw | ConvertFrom-Json

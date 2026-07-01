@@ -35,6 +35,72 @@ const DEFAULT_SERVICE_TYPES = [
 
 let schemaReady = false;
 
+function quoteServiceColumn(columnName) {
+  return columnName === 'Location' ? '"Location"' : columnName;
+}
+
+async function syncServiceRequestIdSequence() {
+  try {
+    await pool.query(`
+      SELECT setval(
+        pg_get_serial_sequence('${TABLE_REQUEST}', 'id'),
+        GREATEST(COALESCE((SELECT MAX(id) FROM ${TABLE_REQUEST}), 0), 1)
+      )
+    `);
+  } catch (e) {
+    console.warn('syncServiceRequestIdSequence:', e.message);
+  }
+}
+
+async function insertServiceRequestRow(values) {
+  await ensureServiceRequestSchema();
+  await syncServiceRequestIdSequence();
+
+  const valueMap = {
+    fullname: values.fullName || 'NA',
+    mobilenumber: values.mobileNumber || '0',
+    Location: values.location || '',
+    message: values.legacyMessage,
+    service_type: values.serviceType || values.legacyMessage,
+    additional_notes: values.additionalNotes || null,
+    warranty_type: values.warrantyType,
+    status: values.status || 'Pending',
+    postingdate: values.postingDate || new Date(),
+    account_id: values.accountId,
+    assignby: values.assignBy ?? values.accountId,
+    app_user_id: values.appUserId ?? null,
+  };
+
+  const colsResult = await pool.query(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = $1 AND column_name != 'id'
+     ORDER BY ordinal_position`,
+    [TABLE_REQUEST]
+  );
+  const tableCols = new Set(colsResult.rows.map((r) => r.column_name));
+
+  const insertCols = [];
+  const insertParams = [];
+  const params = [];
+  let paramIndex = 1;
+  for (const [col, val] of Object.entries(valueMap)) {
+    if (!tableCols.has(col)) continue;
+    insertCols.push(quoteServiceColumn(col));
+    insertParams.push(`$${paramIndex++}`);
+    params.push(val);
+  }
+
+  if (!insertCols.length) {
+    throw new Error('firereport_servicerequest has no insertable columns');
+  }
+
+  const sql = `INSERT INTO ${TABLE_REQUEST} (${insertCols.join(', ')})
+               VALUES (${insertParams.join(', ')})
+               RETURNING id`;
+  const insertResult = await pool.query(sql, params);
+  return insertResult.rows[0].id;
+}
+
 async function ensureServiceRequestSchema() {
   try {
     await pool.query(
@@ -517,27 +583,20 @@ router.post('/', authenticate, async (req, res) => {
     const status = 'Pending';
     const assignBy = authUserId;
 
-    const insertResult = await pool.query(
-      `INSERT INTO ${TABLE_REQUEST}
-        (fullname, mobilenumber, "Location", message, service_type, additional_notes, warranty_type, status, postingdate, account_id, assignby, app_user_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-       RETURNING id`,
-      [
-        fullName || 'NA',
-        mobileNumber || '0',
-        location || '',
-        legacyMessage,
-        serviceType || legacyMessage,
-        additionalNotes || null,
-        warrantyType,
-        status,
-        postingDate,
-        accountId,
-        assignBy,
-        appUserId,
-      ]
-    );
-    const nextId = insertResult.rows[0].id;
+    const nextId = await insertServiceRequestRow({
+      fullName,
+      mobileNumber,
+      location,
+      legacyMessage,
+      serviceType,
+      additionalNotes,
+      warrantyType,
+      status,
+      postingDate,
+      accountId,
+      assignBy,
+      appUserId,
+    });
 
     res.status(201).json({
       message: 'Service request created',
@@ -562,11 +621,16 @@ router.post('/', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Create service request error:', error);
     const detail = error.message || 'Failed to create service request';
-    res.status(500).json({
-      message: detail.includes('violates') || detail.includes('null value')
-        ? 'Could not save service request. Please try again or contact support.'
-        : detail,
-    });
+    const code = error.code || '';
+    let message = detail;
+    if (detail.includes('violates') || detail.includes('null value') || code === '23502') {
+      message = 'Could not save service request. Please try again or contact support.';
+    } else if (code === '23505') {
+      message = 'Could not save service request (duplicate id). Please retry.';
+    } else if (detail.includes('does not exist') || code === '42703') {
+      message = 'Server database schema is outdated. Please redeploy the latest API.';
+    }
+    res.status(500).json({ message });
   }
 });
 
