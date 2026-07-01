@@ -341,8 +341,17 @@ async function loadCustomerForApp(custId, appOwnerId, linkedAuthIds, req = null,
   return res.rows[0] || null;
 }
 
-async function resolveAuthUserIdFromCustId(custId, appOwnerId, linkedAuthIds) {
-  const c = await loadCustomerForApp(custId, appOwnerId, linkedAuthIds);
+async function resolveAuthUserIdFromCustId(custId, appOwnerId, linkedAuthIds, req = null, ctx = null) {
+  if (req && ctx) {
+    const rows = await loadProjectCustomersForSession(req, ctx);
+    const custN = parseInt(custId, 10);
+    const match = rows.find((row) => parseInt(row.cust_id, 10) === custN);
+    if (match?.new_customer_id != null) {
+      const n = parseInt(match.new_customer_id, 10);
+      if (!isNaN(n)) return n;
+    }
+  }
+  const c = await loadCustomerForApp(custId, appOwnerId, linkedAuthIds, req, ctx);
   if (!c || c.new_customer_id == null) return null;
   const n = parseInt(c.new_customer_id, 10);
   return !isNaN(n) ? n : null;

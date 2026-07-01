@@ -1,6 +1,6 @@
 ﻿{
     "name":  "db-solar-phone-app",
-    "version":  "1.2.5",
+    "version":  "1.2.7",
     "description":  "Phone app API for DB Solar (Flutter mobile)",
     "main":  "server.js",
     "scripts":  {

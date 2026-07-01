@@ -9,6 +9,7 @@ const {
   resolveAppUserIdForConsumerAuth,
   loadCustomerForApp,
   resolveAuthUserIdFromCustId,
+  resolveAuthUserIdFromReq,
   resolveCustomerFields,
   resolveDefaultCustomerFields,
 } = require('../utils/appAccess');
@@ -39,6 +40,18 @@ function quoteServiceColumn(columnName) {
   return columnName === 'Location' ? '"Location"' : columnName;
 }
 
+/** Embed warranty/type in message when legacy DB rows lack dedicated columns. */
+function buildServiceLegacyMessage(values) {
+  const parts = [];
+  if (values.warrantyType) parts.push(`[Warranty: ${values.warrantyType}]`);
+  if (values.serviceType && values.serviceType !== values.legacyMessage) {
+    parts.push(`[Type: ${values.serviceType}]`);
+  }
+  if (values.legacyMessage) parts.push(values.legacyMessage);
+  if (values.additionalNotes) parts.push(values.additionalNotes);
+  return parts.join(' ').trim() || values.legacyMessage || 'Service request';
+}
+
 async function syncServiceRequestIdSequence() {
   try {
     await pool.query(`
@@ -60,7 +73,7 @@ async function insertServiceRequestRow(values) {
     fullname: values.fullName || 'NA',
     mobilenumber: values.mobileNumber || '0',
     Location: values.location || '',
-    message: values.legacyMessage,
+    message: buildServiceLegacyMessage(values),
     service_type: values.serviceType || values.legacyMessage,
     additional_notes: values.additionalNotes || null,
     warranty_type: values.warrantyType,
@@ -323,6 +336,20 @@ router.get('/remarks', authenticate, async (req, res) => {
   }
 });
 
+function resolveListAccountIds(req, ctx, filterAuthUserId = null) {
+  const authFromReq = resolveAuthUserIdFromReq(req);
+  const ids = new Set();
+  if (authFromReq != null && !isNaN(authFromReq)) ids.add(authFromReq);
+  const ownerN = parseInt(ctx.appOwnerId, 10);
+  if (!isNaN(ownerN)) ids.add(ownerN);
+  for (const raw of ctx.linkedAuthIds || []) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n)) ids.add(n);
+  }
+  if (filterAuthUserId != null && !isNaN(filterAuthUserId)) ids.add(filterAuthUserId);
+  return [...ids];
+}
+
 router.get('/', authenticate, async (req, res) => {
   try {
     const ctx = await getAppAccessContext(req);
@@ -338,11 +365,15 @@ router.get('/', authenticate, async (req, res) => {
       filterAuthUserId = await resolveAuthUserIdFromCustId(
         filterCustId,
         ctx.appOwnerId,
-        ctx.linkedAuthIds
+        ctx.linkedAuthIds,
+        req,
+        ctx
       );
     }
 
-    const accountIds = [ctx.appOwnerId, ...ctx.linkedAuthIds];
+    const accountIds = resolveListAccountIds(req, ctx, filterAuthUserId);
+    const listOwnerId =
+      accountIds.length > 0 ? accountIds[0] : parseInt(ctx.appOwnerId, 10);
     const resolvedAppUserId = await resolveAppUserId(req);
 
     const result = await pool.query(
@@ -353,8 +384,8 @@ router.get('/', authenticate, async (req, res) => {
        ORDER BY sr.postingdate DESC`,
       [
         resolvedAppUserId,
-        ctx.appOwnerId,
-        accountIds,
+        !isNaN(listOwnerId) ? listOwnerId : ctx.appOwnerId,
+        accountIds.length ? accountIds : [ctx.appOwnerId],
         filterAuthUserId && !isNaN(filterAuthUserId) ? filterAuthUserId : null,
       ]
     );

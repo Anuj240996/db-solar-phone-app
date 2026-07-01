@@ -48,7 +48,7 @@ app.use('/api/growatt', require('./routes/growatt'));
 app.use('/api/notifications', require('./routes/notifications'));
 
 // Health check — apiVersion confirms phone-app has project-link + QR routes deployed
-const API_VERSION = '1.2.5';
+const API_VERSION = '1.2.7';
 const BUILD_STAMP = process.env.BUILD_STAMP || 'local';
 
 async function runStartupMigrations() {
