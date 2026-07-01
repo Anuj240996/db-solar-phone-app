@@ -1,34 +1,84 @@
-# DB Solar — Phone App API
+# DB Solar Backend API
 
-Node.js/Express API for the DB Solar mobile app (Flutter). Deploy on Easypanel as **phone-app** on port **8080**.
+Node.js + Express + PostgreSQL backend for DB Solar App.
 
-**GitHub:** https://github.com/Anuj240996/db-solar-phone-app
+## Setup
 
-## Easypanel setup
+1. **Install dependencies:**
+   ```bash
+   npm install
+   ```
 
-1. Connect this repo in Easypanel → **phone-app** service.
-2. **Branch:** `main` — Dockerfile at repo root (no subdirectory).
-3. **Port:** `8080`
-4. **Environment** (see `.env.example`):
-   - `DATABASE_URL` — `postgresql://USER:PASS@db_solar_database:5432/db_solar_v2`
-   - `JWT_SECRET` — must match tokens issued to the mobile app
-   - `PORT=8080`, `NODE_ENV=production`
-5. Enable **auto-deploy on push** to update the API when you push to `main`.
+2. **Configure environment:**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your database credentials
+   ```
 
-## Health check
+3. **Setup PostgreSQL database:**
+   ```bash
+   createdb db_solar
+   ```
 
-```bash
-curl http://YOUR_HOST:8080/api/health
+4. **Run migrations:**
+   ```bash
+   npm run migrate
+   ```
+
+5. **Seed database (optional):**
+   ```bash
+   npm run seed
+   ```
+
+6. **Start server:**
+   ```bash
+   npm start
+   # or for development
+   npm run dev
+   ```
+
+## Environment Variables
+
+See `.env.example` for required environment variables.
+
+## Database Schema
+
+See `database/schema.sql` for complete database structure.
+
+## API Documentation
+
+See `API_DOCUMENTATION.md` for complete API reference.
+
+## Project Structure
+
+```
+backend/
+├── server.js           # Main server file
+├── routes/              # API routes
+│   ├── auth.js
+│   ├── plants.js
+│   ├── progress.js
+│   ├── complaints.js
+│   ├── faqs.js
+│   ├── quotations.js
+│   ├── support.js
+│   └── users.js
+├── middleware/          # Custom middleware
+│   └── auth.js
+├── database/            # Database files
+│   ├── db.js
+│   ├── schema.sql
+│   ├── migrate.js
+│   └── seed.js
+└── uploads/             # File uploads directory
+    └── complaints/
 ```
 
-Expect `apiVersion` **1.2.1**+ and `"services": true`.
+## Admin Access
 
-## Local development
+Default admin credentials (after seeding):
+- Email: `admin@dbsolar.com`
+- Password: `admin123`
 
-```bash
-cp .env.example .env
-npm ci
-npm run dev
-```
+**Note:** Change the admin password in production!
 
-Point `.env` at your database (VPS: port `2700` externally, or local Postgres).
