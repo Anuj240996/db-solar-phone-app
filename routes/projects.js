@@ -18,6 +18,7 @@ const {
   computeProjectStatusFromResult,
 } = require('../utils/customerResult');
 const { buildProjectsForAuthUserId } = require('../utils/projectBuilders');
+const { buildProgressFallback } = require('../utils/buildProjectProgress');
 const { verifyAuthUserCredentials } = require('../utils/authUserVerify');
 const path = require('path');
 const fs = require('fs');
@@ -1253,6 +1254,29 @@ router.get('/:projectId', authenticate, async (req, res) => {
     } catch (e) {
       console.log('❌ Error fetching progress data:', e.message);
       console.log('Error stack:', e.stack);
+    }
+
+    if (!progressData) {
+      let netMeterDetailsFallback = null;
+      try {
+        netMeterDetailsFallback = await buildNetMeterDetailsForCustomer(pool, projectId);
+      } catch (_) {}
+      let msebDetailsFallback = null;
+      try {
+        msebDetailsFallback = await buildMsebDetailsForCustomer(
+          customer,
+          customerResultData
+        );
+      } catch (_) {}
+      progressData = buildProgressFallback({
+        customer,
+        products,
+        customerResultData,
+        netMeterDetails: netMeterDetailsFallback,
+        msebDetails: msebDetailsFallback,
+        netMeterUsed,
+      });
+      console.log('ℹ️ Built fallback progress for project', projectId);
     }
 
     // Keep top-level warranties in sync with progress component warranty dates
