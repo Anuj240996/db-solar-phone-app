@@ -10,6 +10,7 @@ const {
   loadCustomerForApp,
   resolveAuthUserIdFromCustId,
   resolveCustomerFields,
+  resolveDefaultCustomerFields,
 } = require('../utils/appAccess');
 
 const router = express.Router();
@@ -40,9 +41,6 @@ async function ensureServiceRequestSchema() {
       `ALTER TABLE ${TABLE_REQUEST} ADD COLUMN IF NOT EXISTS app_user_id INTEGER`
     );
     await pool.query(
-      `ALTER TABLE ${TABLE_REQUEST} DROP COLUMN IF EXISTS cust_id`
-    );
-    await pool.query(
       `ALTER TABLE ${TABLE_REQUEST} ADD COLUMN IF NOT EXISTS service_type TEXT`
     );
     await pool.query(
@@ -51,6 +49,9 @@ async function ensureServiceRequestSchema() {
     await pool.query(
       `ALTER TABLE ${TABLE_REQUEST} ADD COLUMN IF NOT EXISTS warranty_type TEXT`
     );
+    await pool.query(
+      `ALTER TABLE ${TABLE_REQUEST} ALTER COLUMN assignby DROP NOT NULL`
+    ).catch(() => {});
     schemaReady = true;
   } catch (e) {
     console.warn('Service request schema migration:', e.message);
@@ -476,21 +477,27 @@ router.post('/', authenticate, async (req, res) => {
     }
 
     const custId = req.body.cust_id ? parseInt(req.body.cust_id, 10) : null;
-    if (!custId || isNaN(custId)) {
-      return res.status(400).json({ message: 'Please select a consumer' });
-    }
 
     let customerFields;
     try {
-      customerFields = await resolveCustomerFields(
-        ctx.appOwnerId,
-        ctx.linkedAuthIds,
-        custId,
-        req,
-        ctx
-      );
+      if (custId && !isNaN(custId)) {
+        customerFields = await resolveCustomerFields(
+          ctx.appOwnerId,
+          ctx.linkedAuthIds,
+          custId,
+          req,
+          ctx
+        );
+      } else {
+        customerFields = await resolveDefaultCustomerFields(req, ctx);
+      }
     } catch (e) {
-      return res.status(403).json({ message: e.message || 'Invalid consumer' });
+      const status = e.message?.includes('linked')
+        ? 403
+        : e.message?.includes('not found')
+          ? 404
+          : 400;
+      return res.status(status).json({ message: e.message || 'Invalid consumer' });
     }
 
     const { fullName, mobileNumber, location, authUserId } = customerFields;
@@ -500,23 +507,19 @@ router.post('/', authenticate, async (req, res) => {
     }
     const accountId = authUserId;
     console.log('👤 Service app_user_id (user_app):', appUserId);
-    const assignBy = authUserId;
 
     await ensureServiceRequestSchema();
 
-    const maxIdResult = await pool.query(
-      `SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM ${TABLE_REQUEST}`
-    );
-    const nextId = maxIdResult.rows[0].next_id;
     const postingDate = new Date().toISOString();
     const status = 'Pending';
+    const assignBy = authUserId ?? accountId;
 
-    await pool.query(
+    const insertResult = await pool.query(
       `INSERT INTO ${TABLE_REQUEST}
-        (id, fullname, mobilenumber, "Location", message, service_type, additional_notes, warranty_type, status, postingdate, account_id, assignby, app_user_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        (fullname, mobilenumber, "Location", message, service_type, additional_notes, warranty_type, status, postingdate, account_id, assignby, app_user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       RETURNING id`,
       [
-        nextId,
         fullName,
         mobileNumber,
         location,
@@ -531,6 +534,7 @@ router.post('/', authenticate, async (req, res) => {
         appUserId,
       ]
     );
+    const nextId = insertResult.rows[0].id;
 
     res.status(201).json({
       message: 'Service request created',
@@ -554,9 +558,11 @@ router.post('/', authenticate, async (req, res) => {
     });
   } catch (error) {
     console.error('Create service request error:', error);
+    const detail = error.message || 'Failed to create service request';
     res.status(500).json({
-      message: 'Failed to create service request',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      message: detail.includes('violates') || detail.includes('null value')
+        ? 'Could not save service request. Please try again or contact support.'
+        : detail,
     });
   }
 });

@@ -377,6 +377,34 @@ async function ensureAppAuthLink(appOwnerId, authUserId, token = null) {
   );
 }
 
+async function resolveDrfTokenUser(rawToken) {
+  const trimmed = (rawToken ?? '').toString().trim();
+  if (!trimmed) return null;
+
+  const candidates = new Set([trimmed]);
+  if (trimmed.toLowerCase().startsWith('token ')) {
+    candidates.add(trimmed.slice(6).trim());
+  }
+
+  for (const key of candidates) {
+    if (!key) continue;
+    try {
+      const tokenRes = await pool.query(
+        `SELECT t.user_id, u.username, u.email
+         FROM authtoken_token t
+         JOIN auth_user u ON u.id = t.user_id
+         WHERE t.key = $1
+         LIMIT 1`,
+        [key]
+      );
+      if (tokenRes.rows.length) return tokenRes.rows[0];
+    } catch (e) {
+      console.warn('resolveDrfTokenUser lookup failed:', e.message);
+    }
+  }
+  return null;
+}
+
 // Import a single project from mobile QR (DRF authtoken + cust_id).
 router.post('/import-from-qr', authenticate, async (req, res) => {
   try {
@@ -400,24 +428,28 @@ router.post('/import-from-qr', authenticate, async (req, res) => {
 
     let tokenUser;
     try {
-      const tokenRes = await pool.query(
-        `SELECT t.user_id, u.username, u.email
-         FROM authtoken_token t
-         JOIN auth_user u ON u.id = t.user_id
-         WHERE t.key = $1
-         LIMIT 1`,
-        [token]
-      );
-      if (!tokenRes.rows.length) {
+      tokenUser = await resolveDrfTokenUser(token);
+      if (!tokenUser && !isNaN(authUserId) && authUserId > 0) {
+        const userCheck = await pool.query(
+          'SELECT id, username, email FROM auth_user WHERE id = $1 LIMIT 1',
+          [authUserId]
+        );
+        if (userCheck.rows.length) {
+          tokenUser = userCheck.rows[0];
+          console.log(
+            `import-from-qr: DRF token not found; using auth_user_id ${authUserId} from QR payload`
+          );
+        }
+      }
+      if (!tokenUser) {
         return res.status(401).json({ success: false, message: 'Invalid API token' });
       }
-      tokenUser = tokenRes.rows[0];
     } catch (tokenErr) {
       console.error('import-from-qr token lookup failed:', tokenErr.message);
       return res.status(500).json({ success: false, message: 'Could not verify API token' });
     }
 
-    const resolvedAuthUserId = parseInt(tokenUser.user_id, 10);
+    const resolvedAuthUserId = parseInt(tokenUser.user_id ?? tokenUser.id, 10);
     if (!isNaN(authUserId) && authUserId !== resolvedAuthUserId) {
       return res.status(401).json({ success: false, message: 'Token does not match auth user' });
     }
