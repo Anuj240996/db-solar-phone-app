@@ -25,6 +25,122 @@ const fs = require('fs');
 
 const router = express.Router();
 
+/**
+ * Ensure the authenticated session may access this customer/project.
+ * Returns { customer } or { error, message }.
+ */
+async function assertProjectAccess(req, ctx, projectId) {
+  const customerResult = await pool.query(
+    `SELECT cust_id, new_customer_id, consumer, comp_name, first_name, last_name
+     FROM customer
+     WHERE cust_id = $1
+     LIMIT 1`,
+    [projectId]
+  );
+  if (customerResult.rows.length === 0) {
+    return { error: 404, message: 'Project not found' };
+  }
+
+  const customer = customerResult.rows[0];
+  const custOwnerId =
+    customer.new_customer_id != null ? parseInt(customer.new_customer_id, 10) : null;
+  const allowedAuthIds = new Set(getProjectOwnerAuthIds(req, ctx));
+  let hasAccess = custOwnerId == null || allowedAuthIds.has(custOwnerId);
+  if (!hasAccess && isUserAppSession(req)) {
+    const linkAppUserId = await resolveLinkAppUserId(req);
+    if (linkAppUserId != null) {
+      hasAccess = await isCustomerLinkedToAppUser(linkAppUserId, projectId);
+    }
+  }
+  if (!hasAccess) {
+    return { error: 403, message: 'Project not linked to your account' };
+  }
+  return { customer };
+}
+
+/** Metadata only (no PDF bytes) for a consumer's release/agreement docs. */
+async function fetchReleaseAgreementMeta(custId) {
+  try {
+    const result = await pool.query(
+      `SELECT id, title, consumer_id_id AS cust_id,
+              NULLIF(TRIM(release_pdf), '') AS release_pdf_path,
+              NULLIF(TRIM(agreement_pdf), '') AS agreement_pdf_path,
+              (release_pdf_data IS NOT NULL AND octet_length(release_pdf_data) > 4) AS has_release_pdf,
+              (agreement_pdf_data IS NOT NULL AND octet_length(agreement_pdf_data) > 4) AS has_agreement_pdf,
+              updated_at, created_at
+       FROM customer_release_agreement
+       WHERE consumer_id_id = $1
+       ORDER BY updated_at DESC NULLS LAST, id DESC
+       LIMIT 1`,
+      [custId]
+    );
+    if (result.rows.length === 0) return null;
+    const row = result.rows[0];
+    return {
+      id: row.id,
+      title: row.title || 'Release & Agreement',
+      custId: row.cust_id,
+      hasReleasePdf: row.has_release_pdf === true,
+      hasAgreementPdf: row.has_agreement_pdf === true,
+      available: row.has_release_pdf === true || row.has_agreement_pdf === true,
+      updatedAt: row.updated_at || null,
+    };
+  } catch (e) {
+    console.warn('fetchReleaseAgreementMeta failed:', e.message);
+    return null;
+  }
+}
+
+function resolveMediaFile(relativePath) {
+  if (!relativePath || typeof relativePath !== 'string') return null;
+  const trimmed = relativePath.trim().replace(/^[/\\]+/, '');
+  if (!trimmed) return null;
+  const candidates = [
+    process.env.MEDIA_ROOT,
+    path.join(__dirname, '..', 'media'),
+    path.join(__dirname, '..', '..', 'media'),
+  ].filter(Boolean);
+  for (const root of candidates) {
+    const full = path.join(root, trimmed);
+    if (fs.existsSync(full) && fs.statSync(full).isFile()) return full;
+  }
+  return null;
+}
+
+async function loadReleaseAgreementPdfBytes(custId, docType) {
+  const column =
+    docType === 'agreement' ? 'agreement_pdf_data' : 'release_pdf_data';
+  const pathColumn = docType === 'agreement' ? 'agreement_pdf' : 'release_pdf';
+
+  const result = await pool.query(
+    `SELECT ${column} AS pdf_data, NULLIF(TRIM(${pathColumn}), '') AS pdf_path
+     FROM customer_release_agreement
+     WHERE consumer_id_id = $1
+     ORDER BY updated_at DESC NULLS LAST, id DESC
+     LIMIT 1`,
+    [custId]
+  );
+  if (result.rows.length === 0) return null;
+
+  const row = result.rows[0];
+  if (row.pdf_data && Buffer.isBuffer(row.pdf_data) && row.pdf_data.length > 4) {
+    return row.pdf_data;
+  }
+  // Some drivers return bytea as hex string / Uint8Array
+  if (row.pdf_data && !(row.pdf_data instanceof Buffer)) {
+    try {
+      const buf = Buffer.from(row.pdf_data);
+      if (buf.length > 4) return buf;
+    } catch (_) {}
+  }
+
+  const filePath = resolveMediaFile(row.pdf_path);
+  if (filePath) {
+    return fs.readFileSync(filePath);
+  }
+  return null;
+}
+
 /** Shared link path for QR (external link_only) and manual credential add. */
 async function handleLinkOnlyImport(req, res, options = {}) {
   let sourceAuthUserId =
@@ -1289,6 +1405,8 @@ router.get('/:projectId', authenticate, async (req, res) => {
       invWarrantyEnd = invWarrantyEnd || progressData.inverter.warrantyEnd || null;
     }
 
+    const releaseAgreement = await fetchReleaseAgreementMeta(customer.cust_id);
+
     const project = {
       id: customer.cust_id,
       projectId: customer.cust_id,
@@ -1313,6 +1431,7 @@ router.get('/:projectId', authenticate, async (req, res) => {
       projectImage: null,
       products: products,
       progress: progressData, // Include progress data
+      releaseAgreement,
       // Quantities from customer record (preferred over barcode counts)
       quantities: {
         solar: quntSolar ?? 0,
@@ -1349,6 +1468,56 @@ router.get('/:projectId', authenticate, async (req, res) => {
     res.status(500).json({ 
       message: 'Server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined 
+    });
+  }
+});
+
+// Release & Agreement PDF for a specific consumer/project (scoped to linked account)
+router.get('/:projectId/release-agreement/:docType', authenticate, async (req, res) => {
+  try {
+    const ctx = await getAppAccessContext(req);
+    if (!ctx) {
+      return res.status(401).json({ message: 'Could not identify user' });
+    }
+
+    const projectId = parseInt(req.params.projectId, 10);
+    const docType = String(req.params.docType || '').toLowerCase().trim();
+    if (isNaN(projectId)) {
+      return res.status(400).json({ message: 'Invalid project ID' });
+    }
+    if (docType !== 'release' && docType !== 'agreement') {
+      return res.status(400).json({ message: 'docType must be release or agreement' });
+    }
+
+    const access = await assertProjectAccess(req, ctx, projectId);
+    if (access.error) {
+      return res.status(access.error).json({ message: access.message });
+    }
+
+    const bytes = await loadReleaseAgreementPdfBytes(projectId, docType);
+    if (!bytes || bytes.length < 5) {
+      return res.status(404).json({
+        message: `${docType === 'agreement' ? 'Agreement' : 'Release'} PDF not found for this consumer`,
+      });
+    }
+
+    const filename =
+      docType === 'agreement'
+        ? `agreement_${projectId}.pdf`
+        : `release_${projectId}.pdf`;
+
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Length': bytes.length,
+      'Content-Disposition': `inline; filename="${filename}"`,
+      'Cache-Control': 'private, max-age=300',
+    });
+    return res.send(bytes);
+  } catch (error) {
+    console.error('Release agreement PDF error:', error);
+    return res.status(500).json({
+      message: 'Server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   }
 });
