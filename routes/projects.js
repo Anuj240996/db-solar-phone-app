@@ -82,7 +82,9 @@ async function fetchReleaseAgreementMeta(custId) {
       custId: row.cust_id,
       hasReleasePdf: row.has_release_pdf === true,
       hasAgreementPdf: row.has_agreement_pdf === true,
+      // available = at least one PDF; complete only when both are present
       available: row.has_release_pdf === true || row.has_agreement_pdf === true,
+      complete: row.has_release_pdf === true && row.has_agreement_pdf === true,
       updatedAt: row.updated_at || null,
     };
   } catch (e) {
