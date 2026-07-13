@@ -66,6 +66,13 @@ async function insertCrmLead(client, payload) {
     budget,
     estimated_value,
     probability,
+    alternate_phone,
+    payment_mode,
+    rooftop_area,
+    rooftop_area_unit,
+    source,
+    campaign,
+    sorting_address,
   } = payload;
 
   const orgRes = await client.query(
@@ -94,6 +101,10 @@ async function insertCrmLead(client, payload) {
   const roofVal = roof_type && String(roof_type).trim()
     ? String(roof_type).trim().toLowerCase()
     : 'flat';
+  const altPhone =
+    alternate_phone && String(alternate_phone).trim() && String(alternate_phone).trim() !== 'NA'
+      ? String(alternate_phone).trim()
+      : '';
 
   let billNum = null;
   if (electricity_bill != null && String(electricity_bill).trim() !== '') {
@@ -105,6 +116,44 @@ async function insertCrmLead(client, payload) {
     const n = parseInt(String(monthly_consumption).replace(/[^\d]/g, ''), 10);
     if (!Number.isNaN(n)) consumptionNum = n;
   }
+
+  // CRM table has no payment_mode / rooftop_area columns — keep full form snapshot in notes.
+  const extraLines = [];
+  if (payment_mode) extraLines.push(`Payment mode: ${payment_mode}`);
+  if (rooftop_area != null && String(rooftop_area).trim() !== '') {
+    extraLines.push(
+      `Rooftop area: ${rooftop_area}${rooftop_area_unit ? ` ${rooftop_area_unit}` : ''}`
+    );
+  }
+  if (sorting_address && String(sorting_address).trim() && String(sorting_address).trim() !== addressVal) {
+    extraLines.push(`Sorting address: ${sorting_address}`);
+  }
+  if (source) extraLines.push(`App source: ${source}`);
+  if (campaign) extraLines.push(`Campaign: ${campaign}`);
+  if (monthly_consumption != null && String(monthly_consumption).trim() !== '') {
+    extraLines.push(`Monthly consumption (kWh): ${monthly_consumption}`);
+  }
+  if (electricity_bill != null && String(electricity_bill).trim() !== '') {
+    extraLines.push(`Electricity bill (₹): ${electricity_bill}`);
+  }
+
+  const userNotes =
+    notes != null && String(notes).trim() && String(notes).trim() !== 'NA'
+      ? String(notes).trim()
+      : '';
+  const notesCombined = [userNotes, ...extraLines].filter(Boolean).join('\n');
+  const internalNotes = [
+    'Submitted from DB Solar mobile app',
+    `property_type=${propVal}`,
+    `roof_type=${roofVal}`,
+    lat != null ? `lat=${lat}` : null,
+    lng != null ? `lng=${lng}` : null,
+    payment_mode ? `payment_mode=${payment_mode}` : null,
+    rooftop_area != null ? `rooftop_area=${rooftop_area}` : null,
+    rooftop_area_unit ? `rooftop_area_unit=${rooftop_area_unit}` : null,
+  ]
+    .filter(Boolean)
+    .join(' | ');
 
   const result = await client.query(
     `INSERT INTO crm_leads_lead (
@@ -121,7 +170,8 @@ async function insertCrmLead(client, payload) {
       $18, $19, $20, $21, $22,
       $23, $24, $25, $26, $27,
       $28, $29
-    ) RETURNING id, name, phone, email, stage, organization_id, source_id, created`,
+    ) RETURNING id, name, phone, email, stage, organization_id, source_id, created, notes, internal_notes,
+               property_type, roof_type, electricity_bill, monthly_consumption, city, state, pincode`,
     [
       now,
       now,
@@ -129,7 +179,7 @@ async function insertCrmLead(client, payload) {
       name || 'NA',
       phoneVal,
       emailVal,
-      '',
+      altPhone,
       addressVal,
       cityVal,
       stateVal,
@@ -148,8 +198,8 @@ async function insertCrmLead(client, payload) {
         : null,
       probability != null ? Math.min(100, Math.max(0, Number(probability) || 0)) : 10,
       next_followup || new Date(now.getTime() + 24 * 60 * 60 * 1000),
-      notes != null ? String(notes) : '',
-      '',
+      notesCombined,
+      internalNotes,
       '',
       '',
       organizationId,
@@ -351,6 +401,13 @@ router.post('/', authenticate, [
       budget: allColumnValues.budget,
       estimated_value: allColumnValues.estimated_value,
       probability: allColumnValues.probability || 10,
+      alternate_phone: allColumnValues.alternate_phone,
+      payment_mode: allColumnValues.payment_mode,
+      rooftop_area: allColumnValues.rooftop_area,
+      rooftop_area_unit: allColumnValues.rooftop_area_unit,
+      source,
+      campaign,
+      sorting_address: sorting_address || null,
     });
 
     let legacyLead = null;
