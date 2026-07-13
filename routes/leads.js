@@ -89,22 +89,40 @@ async function insertCrmLead(client, payload) {
 
   const crmStage = stage === 'ext_app' ? 'quote' : 'new';
   const crmScore = 'medium';
-  const phoneVal = phone && String(phone).trim() ? String(phone).trim() : 'NA';
-  const emailVal = email && String(email).trim() ? String(email).trim() : '';
+  const clip = (v, max) => String(v ?? '').slice(0, max);
+  const phoneVal = clip(phone && String(phone).trim() ? String(phone).trim() : 'NA', 20);
+  const emailVal = clip(email && String(email).trim() ? String(email).trim() : '', 254);
   const addressVal = address && String(address).trim() ? String(address).trim() : 'NA';
-  const cityVal = city && String(city).trim() ? String(city).trim() : 'NA';
-  const stateVal = state && String(state).trim() ? String(state).trim() : 'NA';
-  const pinVal = pincode && String(pincode).trim() ? String(pincode).trim() : 'NA';
-  const propVal = property_type && String(property_type).trim()
+  const cityVal = clip(city && String(city).trim() ? String(city).trim() : 'NA', 100);
+  const stateVal = clip(state && String(state).trim() ? String(state).trim() : 'NA', 50);
+  const pinVal = clip(pincode && String(pincode).trim() ? String(pincode).trim() : 'NA', 10);
+  let propVal = property_type && String(property_type).trim()
     ? String(property_type).trim().toLowerCase()
     : 'residential';
-  const roofVal = roof_type && String(roof_type).trim()
+  if (!['residential', 'commercial', 'industrial'].includes(propVal)) {
+    propVal = propVal.includes('comm') ? 'commercial'
+      : propVal.includes('indust') ? 'industrial'
+        : 'residential';
+  }
+  propVal = clip(propVal, 20);
+  let roofVal = roof_type && String(roof_type).trim()
     ? String(roof_type).trim().toLowerCase()
     : 'flat';
-  const altPhone =
+  if (!['flat', 'sloped', 'metal', 'tile', 'other'].includes(roofVal)) {
+    if (roofVal.includes('slope') || roofVal.includes('tilt')) roofVal = 'sloped';
+    else if (roofVal.includes('metal') || roofVal.includes('sheet')) roofVal = 'metal';
+    else if (roofVal.includes('tile')) roofVal = 'tile';
+    else if (roofVal.includes('rcc') || roofVal.includes('flat')) roofVal = 'flat';
+    else roofVal = 'other';
+  }
+  roofVal = clip(roofVal, 20);
+  const altPhone = clip(
     alternate_phone && String(alternate_phone).trim() && String(alternate_phone).trim() !== 'NA'
       ? String(alternate_phone).trim()
-      : '';
+      : '',
+    20
+  );
+  const nameVal = clip(name || 'NA', 200);
 
   let billNum = null;
   if (electricity_bill != null && String(electricity_bill).trim() !== '') {
@@ -139,6 +157,7 @@ async function insertCrmLead(client, payload) {
   else if (payRaw.includes('net') || payRaw.includes('bank')) financeType = 'netbanking';
   else if (payRaw.includes('finance') || payRaw.includes('loan')) financeType = 'finance';
   else if (payRaw && payRaw !== 'na' && payRaw.length <= 20) financeType = payRaw;
+  financeType = clip(financeType, 20);
 
   // CRM table has no dedicated columns for every app field — keep full form snapshot in notes.
   const extraLines = [];
@@ -200,7 +219,7 @@ async function insertCrmLead(client, payload) {
       now,
       now,
       id,
-      name || 'NA',
+      nameVal,
       phoneVal,
       emailVal,
       altPhone,
@@ -241,16 +260,18 @@ async function insertCrmLead(client, payload) {
 router.post('/', authenticate, [
   body('name').trim().notEmpty().withMessage('Project/Customer name is required'),
   body('property_type').trim().notEmpty().withMessage('Category is required'),
-  body('sorting_address').optional().trim(),
-  body('city').optional().trim(),
-  body('state').optional().trim(),
-  body('pincode').optional().trim(),
-  body('roof_type').optional().trim(),
-  body('electricity_bill').optional().trim(),
-  body('monthly_consumption').optional().trim(),
-  body('payment_mode').optional().trim(),
-  body('lat').optional(),
-  body('lng').optional(),
+  body('sorting_address').optional({ nullable: true }).customSanitizer((v) => (v == null ? v : String(v).trim())),
+  body('city').optional({ nullable: true }).customSanitizer((v) => (v == null ? v : String(v).trim())),
+  body('state').optional({ nullable: true }).customSanitizer((v) => (v == null ? v : String(v).trim())),
+  body('pincode').optional({ nullable: true }).customSanitizer((v) => (v == null ? v : String(v).trim())),
+  body('roof_type').optional({ nullable: true }).customSanitizer((v) => (v == null ? v : String(v).trim())),
+  body('electricity_bill').optional({ nullable: true }).customSanitizer((v) => (v == null ? v : String(v))),
+  body('monthly_consumption').optional({ nullable: true }).customSanitizer((v) => (v == null ? v : String(v))),
+  body('payment_mode').optional({ nullable: true }).customSanitizer((v) => (v == null ? v : String(v).trim())),
+  body('rooftop_area').optional({ nullable: true }).customSanitizer((v) => (v == null ? v : String(v))),
+  body('rooftop_area_unit').optional({ nullable: true }).customSanitizer((v) => (v == null ? v : String(v).trim())),
+  body('lat').optional({ nullable: true }),
+  body('lng').optional({ nullable: true }),
 ], async (req, res) => {
   const client = await pool.connect();
   try {
@@ -492,10 +513,14 @@ router.post('/', authenticate, [
       await client.query('ROLLBACK');
     } catch (_) {}
     console.error('Create lead error:', error);
-    const message = process.env.NODE_ENV === 'development' || process.env.DEBUG
-      ? (error.message || 'Server error')
-      : 'Server error';
-    res.status(500).json({ message });
+    const message = error.message || 'Server error';
+    res.status(500).json({
+      message: process.env.NODE_ENV === 'production' && !process.env.DEBUG
+        ? 'Server error'
+        : message,
+      detail: error.detail || undefined,
+      code: error.code || undefined,
+    });
   } finally {
     client.release();
   }
