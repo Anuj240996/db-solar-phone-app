@@ -117,7 +117,30 @@ async function insertCrmLead(client, payload) {
     if (!Number.isNaN(n)) consumptionNum = n;
   }
 
-  // CRM table has no payment_mode / rooftop_area columns — keep full form snapshot in notes.
+  // NOT NULL on CRM: rooftop_area_unit (varchar 5) + finance_type
+  let rooftopAreaNum = null;
+  if (rooftop_area != null && String(rooftop_area).trim() !== '') {
+    const n = Number(String(rooftop_area).replace(/[^\d.]/g, ''));
+    if (!Number.isNaN(n)) rooftopAreaNum = n;
+  }
+  const unitRaw = rooftop_area_unit != null ? String(rooftop_area_unit).trim().toLowerCase() : '';
+  let rooftopAreaUnit = 'm2';
+  if (unitRaw === 'm2' || unitRaw === 'sq_m' || unitRaw === 'sqm' || unitRaw === 'sq.m') {
+    rooftopAreaUnit = 'm2';
+  } else if (unitRaw === 'ft2' || unitRaw === 'sq_ft' || unitRaw === 'sqft' || unitRaw === 'sq.ft') {
+    rooftopAreaUnit = 'ft2';
+  } else if (unitRaw && unitRaw.length <= 5) {
+    rooftopAreaUnit = unitRaw;
+  }
+
+  const payRaw = payment_mode != null ? String(payment_mode).trim().toLowerCase() : '';
+  let financeType = '';
+  if (payRaw.includes('cash')) financeType = 'cash';
+  else if (payRaw.includes('net') || payRaw.includes('bank')) financeType = 'netbanking';
+  else if (payRaw.includes('finance') || payRaw.includes('loan')) financeType = 'finance';
+  else if (payRaw && payRaw !== 'na' && payRaw.length <= 20) financeType = payRaw;
+
+  // CRM table has no dedicated columns for every app field — keep full form snapshot in notes.
   const extraLines = [];
   if (payment_mode) extraLines.push(`Payment mode: ${payment_mode}`);
   if (rooftop_area != null && String(rooftop_area).trim() !== '') {
@@ -134,7 +157,7 @@ async function insertCrmLead(client, payload) {
     extraLines.push(`Monthly consumption (kWh): ${monthly_consumption}`);
   }
   if (electricity_bill != null && String(electricity_bill).trim() !== '') {
-    extraLines.push(`Electricity bill (₹): ${electricity_bill}`);
+    extraLines.push(`Electricity bill (Rs): ${electricity_bill}`);
   }
 
   const userNotes =
@@ -162,16 +185,17 @@ async function insertCrmLead(client, payload) {
       property_type, roof_type, electricity_bill, monthly_consumption,
       stage, score, budget, estimated_value, probability,
       next_followup, notes, internal_notes, lost_reason, competitor,
-      organization_id, source_id
+      organization_id, source_id, rooftop_area, rooftop_area_unit, finance_type
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7,
       $8, $9, $10, $11, $12, $13,
       $14, $15, $16, $17,
       $18, $19, $20, $21, $22,
       $23, $24, $25, $26, $27,
-      $28, $29
+      $28, $29, $30, $31, $32
     ) RETURNING id, name, phone, email, stage, organization_id, source_id, created, notes, internal_notes,
-               property_type, roof_type, electricity_bill, monthly_consumption, city, state, pincode`,
+               property_type, roof_type, electricity_bill, monthly_consumption, city, state, pincode,
+               rooftop_area, rooftop_area_unit, finance_type`,
     [
       now,
       now,
@@ -204,6 +228,9 @@ async function insertCrmLead(client, payload) {
       '',
       organizationId,
       sourceId,
+      rooftopAreaNum,
+      rooftopAreaUnit,
+      financeType,
     ]
   );
 
