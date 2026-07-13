@@ -1,10 +1,164 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
+const crypto = require('crypto');
 const pool = require('../database/db');
 const { authenticate } = require('../middleware/auth');
 const { ensureLeadsLeadSchema } = require('../utils/ensureLeadsLeadSchema');
 
 const router = express.Router();
+
+async function resolveMobileAppSourceId(client) {
+  const existing = await client.query(
+    `SELECT id FROM crm_leads_leadsource
+     WHERE LOWER(TRIM(name)) IN ('mobile app', 'app', 'phone app')
+     ORDER BY id ASC LIMIT 1`
+  );
+  if (existing.rows.length > 0) return existing.rows[0].id;
+
+  try {
+    const orgRes = await client.query(
+      `SELECT id FROM core_organization WHERE deleted_at IS NULL ORDER BY id ASC LIMIT 1`
+    );
+    const organizationId = orgRes.rows[0]?.id;
+    if (organizationId != null) {
+      const nextId = await client.query(
+        `SELECT COALESCE(MAX(id), 0) + 1 AS id FROM crm_leads_leadsource`
+      );
+      const id = nextId.rows[0].id;
+      const now = new Date();
+      const inserted = await client.query(
+        `INSERT INTO crm_leads_leadsource
+          (id, created, modified, name, is_active, cost_per_lead, organization_id)
+         VALUES ($1, $2, $3, 'Mobile App', true, 0, $4)
+         RETURNING id`,
+        [id, now, now, organizationId]
+      );
+      if (inserted.rows[0]?.id) return inserted.rows[0].id;
+    }
+  } catch (e) {
+    console.warn('Could not create Mobile App lead source:', e.message);
+  }
+
+  const other = await client.query(
+    `SELECT id FROM crm_leads_leadsource WHERE LOWER(TRIM(name)) = 'other' LIMIT 1`
+  );
+  return other.rows[0]?.id || null;
+}
+
+async function insertCrmLead(client, payload) {
+  const {
+    name,
+    phone,
+    email,
+    address,
+    city,
+    state,
+    pincode,
+    property_type,
+    roof_type,
+    electricity_bill,
+    monthly_consumption,
+    lat,
+    lng,
+    stage,
+    notes,
+    next_followup,
+    budget,
+    estimated_value,
+    probability,
+  } = payload;
+
+  const orgRes = await client.query(
+    `SELECT id FROM core_organization WHERE deleted_at IS NULL ORDER BY id ASC LIMIT 1`
+  );
+  const organizationId = orgRes.rows[0]?.id;
+  if (!organizationId) {
+    throw new Error('No organization found for CRM lead');
+  }
+
+  const sourceId = await resolveMobileAppSourceId(client);
+  const id = crypto.randomUUID();
+  const now = new Date();
+
+  const crmStage = stage === 'ext_app' ? 'quote' : 'new';
+  const crmScore = 'medium';
+  const phoneVal = phone && String(phone).trim() ? String(phone).trim() : 'NA';
+  const emailVal = email && String(email).trim() ? String(email).trim() : '';
+  const addressVal = address && String(address).trim() ? String(address).trim() : 'NA';
+  const cityVal = city && String(city).trim() ? String(city).trim() : 'NA';
+  const stateVal = state && String(state).trim() ? String(state).trim() : 'NA';
+  const pinVal = pincode && String(pincode).trim() ? String(pincode).trim() : 'NA';
+  const propVal = property_type && String(property_type).trim()
+    ? String(property_type).trim().toLowerCase()
+    : 'residential';
+  const roofVal = roof_type && String(roof_type).trim()
+    ? String(roof_type).trim().toLowerCase()
+    : 'flat';
+
+  let billNum = null;
+  if (electricity_bill != null && String(electricity_bill).trim() !== '') {
+    const n = Number(String(electricity_bill).replace(/[^\d.]/g, ''));
+    if (!Number.isNaN(n)) billNum = n;
+  }
+  let consumptionNum = null;
+  if (monthly_consumption != null && String(monthly_consumption).trim() !== '') {
+    const n = parseInt(String(monthly_consumption).replace(/[^\d]/g, ''), 10);
+    if (!Number.isNaN(n)) consumptionNum = n;
+  }
+
+  const result = await client.query(
+    `INSERT INTO crm_leads_lead (
+      created, modified, id, name, phone, email, alternate_phone,
+      address, city, state, pincode, latitude, longitude,
+      property_type, roof_type, electricity_bill, monthly_consumption,
+      stage, score, budget, estimated_value, probability,
+      next_followup, notes, internal_notes, lost_reason, competitor,
+      organization_id, source_id
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6, $7,
+      $8, $9, $10, $11, $12, $13,
+      $14, $15, $16, $17,
+      $18, $19, $20, $21, $22,
+      $23, $24, $25, $26, $27,
+      $28, $29
+    ) RETURNING id, name, phone, email, stage, organization_id, source_id, created`,
+    [
+      now,
+      now,
+      id,
+      name || 'NA',
+      phoneVal,
+      emailVal,
+      '',
+      addressVal,
+      cityVal,
+      stateVal,
+      pinVal,
+      lat != null && !Number.isNaN(Number(lat)) ? Number(lat) : null,
+      lng != null && !Number.isNaN(Number(lng)) ? Number(lng) : null,
+      propVal,
+      roofVal,
+      billNum,
+      consumptionNum,
+      crmStage,
+      crmScore,
+      budget != null && !Number.isNaN(Number(budget)) ? Number(budget) : null,
+      estimated_value != null && !Number.isNaN(Number(estimated_value))
+        ? Number(estimated_value)
+        : null,
+      probability != null ? Math.min(100, Math.max(0, Number(probability) || 0)) : 10,
+      next_followup || new Date(now.getTime() + 24 * 60 * 60 * 1000),
+      notes != null ? String(notes) : '',
+      '',
+      '',
+      '',
+      organizationId,
+      sourceId,
+    ]
+  );
+
+  return result.rows[0];
+}
 
 // Create lead from Get Quote flow (any authenticated user - user_app or auth_user)
 router.post('/', authenticate, [
@@ -21,6 +175,7 @@ router.post('/', authenticate, [
   body('lat').optional(),
   body('lng').optional(),
 ], async (req, res) => {
+  const client = await pool.connect();
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -34,17 +189,15 @@ router.post('/', authenticate, [
     let contact = '';
     let appUserId = null;
 
-    // Get email and phone from user_app (app user record) for the logged-in user
     if (user.auth_source === 'user_app' && user.id != null) {
       appUserId = user.id;
       email = user.email || null;
       contact = user.phone != null && String(user.phone).trim() !== '' ? String(user.phone).trim() : '';
     } else {
-      // Logged in via auth_user: look up user_app by email to get app user's email and phone
       const loginEmail = user.email || user.username;
       if (loginEmail) {
         try {
-          const ua = await pool.query(
+          const ua = await client.query(
             'SELECT id, email, phone FROM user_app WHERE email = $1 LIMIT 1',
             [loginEmail]
           );
@@ -66,7 +219,7 @@ router.post('/', authenticate, [
     let hasProjects = false;
     if (appUserId != null) {
       try {
-        const custResult = await pool.query(
+        const custResult = await client.query(
           'SELECT 1 FROM customer WHERE new_customer_id = $1 LIMIT 1',
           [appUserId]
         );
@@ -75,12 +228,11 @@ router.post('/', authenticate, [
           hasProjects = true;
         }
       } catch (e) {
-        // If customer table doesn't exist or query fails, keep new_app
+        // keep new_app
       }
     }
     const status = hasProjects ? 'ext_enq' : 'new_enq';
 
-    // Request body keys must match Flutter createLead payload. See LEADS_FIELD_MAPPING.md
     const {
       name,
       property_type,
@@ -132,10 +284,8 @@ router.post('/', authenticate, [
 
     const latVal = lat != null ? lat : latitude;
     const lngVal = lng != null ? lng : longitude;
-
     const extraJson = JSON.stringify({});
 
-    // Build values for every column we might send (string -> default 'NA', number -> 0, date -> now)
     const allColumnValues = {
       name: name || 'NA',
       property_type: property_type || 'NA',
@@ -179,58 +329,91 @@ router.post('/', authenticate, [
       rooftop_area_unit: (bodyRooftopAreaUnit != null && String(bodyRooftopAreaUnit).trim()) ? String(bodyRooftopAreaUnit).trim() : 'sq_m',
     };
 
-    // Only insert into columns that exist in the table (avoids "column does not exist")
-    const colsResult = await pool.query(
-      `SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'leads_lead' AND column_name != 'id' ORDER BY ordinal_position`
-    );
-    const existingColumns = colsResult.rows.map((r) => r.column_name);
-    const nullableSet = new Set(colsResult.rows.filter((r) => r.is_nullable === 'YES').map((r) => r.column_name));
+    await client.query('BEGIN');
 
-    if (existingColumns.length === 0) {
-      return res.status(500).json({ message: 'leads_lead table has no insertable columns' });
-    }
-
-    const numericColumns = new Set([
-      'probability', 'score', 'budget', 'estimated_value',
-    ]);
-    const nullableIdColumns = new Set(['user_app_id', 'assigned_to_id']);
-    const floatColumns = new Set(['lat', 'lng', 'latitude', 'longitude', 'rooftop_area']);
-    const dateColumns = new Set([
-      'created_at', 'updated_at', 'next_followup',
-      'assigned_date', 'last_contacted', 'converted_at', 'lost_at',
-    ]);
-    const jsonColumns = new Set(['extra', 'tags']);
-
-    const values = existingColumns.map((col) => {
-      const v = allColumnValues[col];
-      if (v !== undefined) return v;
-      if (dateColumns.has(col)) return now;
-      if (col === 'extra' || (jsonColumns.has(col) && col !== 'tags')) return extraJson;
-      if (col === 'tags') return '[]';
-      if (floatColumns.has(col) || nullableIdColumns.has(col)) return null;
-      if (numericColumns.has(col)) return 0;
-      if (nullableSet.has(col)) return null;
-      return 'NA';
+    const crmLead = await insertCrmLead(client, {
+      name: allColumnValues.name,
+      phone: allColumnValues.phone,
+      email: allColumnValues.email,
+      address: allColumnValues.address,
+      city: allColumnValues.city,
+      state: allColumnValues.state,
+      pincode: allColumnValues.pincode,
+      property_type: allColumnValues.property_type,
+      roof_type: allColumnValues.roof_type,
+      electricity_bill: allColumnValues.electricity_bill,
+      monthly_consumption: allColumnValues.monthly_consumption,
+      lat: allColumnValues.lat,
+      lng: allColumnValues.lng,
+      stage,
+      notes: notes != null ? String(notes) : '',
+      next_followup: nextFollowup,
+      budget: allColumnValues.budget,
+      estimated_value: allColumnValues.estimated_value,
+      probability: allColumnValues.probability || 10,
     });
 
-    const placeholders = existingColumns.map((_, i) => `$${i + 1}`).join(', ');
-    const columnList = existingColumns.join(', ');
+    let legacyLead = null;
+    try {
+      const colsResult = await client.query(
+        `SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'leads_lead' AND column_name != 'id' ORDER BY ordinal_position`
+      );
+      const existingColumns = colsResult.rows.map((r) => r.column_name);
+      const nullableSet = new Set(colsResult.rows.filter((r) => r.is_nullable === 'YES').map((r) => r.column_name));
 
-    const result = await pool.query(
-      `INSERT INTO leads_lead (${columnList}) VALUES (${placeholders}) RETURNING *`,
-      values
-    );
+      if (existingColumns.length > 0) {
+        const numericColumns = new Set(['probability', 'score', 'budget', 'estimated_value']);
+        const nullableIdColumns = new Set(['user_app_id', 'assigned_to_id']);
+        const floatColumns = new Set(['lat', 'lng', 'latitude', 'longitude', 'rooftop_area']);
+        const dateColumns = new Set([
+          'created_at', 'updated_at', 'next_followup',
+          'assigned_date', 'last_contacted', 'converted_at', 'lost_at',
+        ]);
+        const jsonColumns = new Set(['extra', 'tags']);
+
+        const values = existingColumns.map((col) => {
+          const v = allColumnValues[col];
+          if (v !== undefined) return v;
+          if (dateColumns.has(col)) return now;
+          if (col === 'extra' || (jsonColumns.has(col) && col !== 'tags')) return extraJson;
+          if (col === 'tags') return '[]';
+          if (floatColumns.has(col) || nullableIdColumns.has(col)) return null;
+          if (numericColumns.has(col)) return 0;
+          if (nullableSet.has(col)) return null;
+          return 'NA';
+        });
+
+        const placeholders = existingColumns.map((_, i) => `$${i + 1}`).join(', ');
+        const columnList = existingColumns.join(', ');
+        const result = await client.query(
+          `INSERT INTO leads_lead (${columnList}) VALUES (${placeholders}) RETURNING *`,
+          values
+        );
+        legacyLead = result.rows[0];
+      }
+    } catch (legacyErr) {
+      console.warn('Legacy leads_lead insert skipped:', legacyErr.message);
+    }
+
+    await client.query('COMMIT');
 
     res.status(201).json({
       message: 'Lead submitted successfully',
-      lead: result.rows[0],
+      lead: crmLead || legacyLead,
+      crmLead,
+      legacyLead,
     });
   } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (_) {}
     console.error('Create lead error:', error);
     const message = process.env.NODE_ENV === 'development' || process.env.DEBUG
       ? (error.message || 'Server error')
       : 'Server error';
     res.status(500).json({ message });
+  } finally {
+    client.release();
   }
 });
 
