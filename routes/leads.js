@@ -159,43 +159,9 @@ async function insertCrmLead(client, payload) {
   else if (payRaw && payRaw !== 'na' && payRaw.length <= 20) financeType = payRaw;
   financeType = clip(financeType, 20);
 
-  // CRM table has no dedicated columns for every app field — keep full form snapshot in notes.
-  const extraLines = [];
-  if (payment_mode) extraLines.push(`Payment mode: ${payment_mode}`);
-  if (rooftop_area != null && String(rooftop_area).trim() !== '') {
-    extraLines.push(
-      `Rooftop area: ${rooftop_area}${rooftop_area_unit ? ` ${rooftop_area_unit}` : ''}`
-    );
-  }
-  if (sorting_address && String(sorting_address).trim() && String(sorting_address).trim() !== addressVal) {
-    extraLines.push(`Sorting address: ${sorting_address}`);
-  }
-  if (source) extraLines.push(`App source: ${source}`);
-  if (campaign) extraLines.push(`Campaign: ${campaign}`);
-  if (monthly_consumption != null && String(monthly_consumption).trim() !== '') {
-    extraLines.push(`Monthly consumption (kWh): ${monthly_consumption}`);
-  }
-  if (electricity_bill != null && String(electricity_bill).trim() !== '') {
-    extraLines.push(`Electricity bill (Rs): ${electricity_bill}`);
-  }
-
-  const userNotes =
-    notes != null && String(notes).trim() && String(notes).trim() !== 'NA'
-      ? String(notes).trim()
-      : '';
-  const notesCombined = [userNotes, ...extraLines].filter(Boolean).join('\n');
-  const internalNotes = [
-    'Submitted from DB Solar mobile app',
-    `property_type=${propVal}`,
-    `roof_type=${roofVal}`,
-    lat != null ? `lat=${lat}` : null,
-    lng != null ? `lng=${lng}` : null,
-    payment_mode ? `payment_mode=${payment_mode}` : null,
-    rooftop_area != null ? `rooftop_area=${rooftop_area}` : null,
-    rooftop_area_unit ? `rooftop_area_unit=${rooftop_area_unit}` : null,
-  ]
-    .filter(Boolean)
-    .join(' | ');
+  // Keep Notes / Internal notes empty for CRM UI — form data goes into real columns only.
+  const notesVal = '';
+  const internalNotesVal = '';
 
   const result = await client.query(
     `INSERT INTO crm_leads_lead (
@@ -241,8 +207,8 @@ async function insertCrmLead(client, payload) {
         : null,
       probability != null ? Math.min(100, Math.max(0, Number(probability) || 0)) : 10,
       next_followup || new Date(now.getTime() + 24 * 60 * 60 * 1000),
-      notesCombined,
-      internalNotes,
+      notesVal,
+      internalNotesVal,
       '',
       '',
       organizationId,
