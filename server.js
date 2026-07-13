@@ -46,9 +46,10 @@ app.use('/api/support', require('./routes/support'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/growatt', require('./routes/growatt'));
 app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/stats', require('./routes/stats'));
 
 // Health check — apiVersion confirms phone-app has project-link + QR routes deployed
-const API_VERSION = '1.2.8';
+const API_VERSION = '1.2.9';
 const BUILD_STAMP = process.env.BUILD_STAMP || 'local';
 
 async function runStartupMigrations() {
@@ -105,6 +106,7 @@ app.get('/api/health', async (req, res) => {
       services: true,
       serviceCreateDynamicInsert: true,
       releaseAgreementPdfs: true,
+      companyStats: true,
     },
   });
 });
