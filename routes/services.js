@@ -162,6 +162,8 @@ function mapServiceRequestRow(row, getVal = getValue) {
   const assignToId = getVal(row, 'assignto_id');
   const postingDate = getVal(row, 'postingdate');
   const consumerName = pickConsumerDisplayName(row, getVal);
+  const customerPhone = (getVal(row, 'consumer_phone') || '').toString().trim();
+  const storedPhone = (getVal(row, 'mobilenumber') || '').toString().trim();
   return {
     id: getVal(row, 'id'),
     userId: getVal(row, 'account_id'),
@@ -169,7 +171,8 @@ function mapServiceRequestRow(row, getVal = getValue) {
     assignBy: getVal(row, 'assignby'),
     consumerName,
     fullName: consumerName || getVal(row, 'fullname') || '',
-    mobileNumber: getVal(row, 'mobilenumber') || '',
+    // Prefer live customer.phone so portal/app never show a stale/wrong stored number.
+    mobileNumber: customerPhone || storedPhone,
     location: getVal(row, 'Location') || getVal(row, 'location') || '',
     message: getVal(row, 'message') || '',
     serviceType: getVal(row, 'service_type') || '',
@@ -268,14 +271,15 @@ const LIST_SELECT = `
   up.designation AS engineer_designation,
   up.image AS engineer_image,
   up.name AS engineer_profile_name,
-  c_disp.comp_name AS consumer_display_name`;
+  c_disp.comp_name AS consumer_display_name,
+  c_disp.phone AS consumer_phone`;
 
 const LIST_JOINS = `
   LEFT JOIN auth_user au ON sr.assignto_id = au.id
   LEFT JOIN user_profile up ON au.id = up.customer_id
   LEFT JOIN LATERAL (
-    SELECT comp_name FROM customer
-    WHERE new_customer_id = COALESCE(sr.assignby, sr.account_id)
+    SELECT comp_name, phone FROM customer
+    WHERE new_customer_id = COALESCE(sr.account_id, sr.assignby)
     ORDER BY cust_id DESC
     LIMIT 1
   ) c_disp ON true`;

@@ -15,12 +15,14 @@ const PASSWORD = process.env.VPS_SSH_PASSWORD || process.env.VPS_PASSWORD || 'He
 const BACKEND = path.join(__dirname, '..');
 const REMOTE_SRC = '/root/phoneapp_new';
 const REMOTE_UPLOAD = '/root/phoneapp_upload';
-const EXPECT_VERSION = '1.3.5';
-const IMG = 'easypanel/db_solar/phone-app:v135';
+const EXPECT_VERSION = '1.3.6';
+const IMG = 'easypanel/db_solar/phone-app:v136';
+const SERVICE = 'db_solar_phone-app';
 
 const FILES = [
   'server.js',
   'routes/leads.js',
+  'routes/services.js',
   'routes/faqs.js',
   'utils/ensureFaqsSeeded.js',
   'package.json',
@@ -129,13 +131,15 @@ fi
 
 cp -f "$UP/server.js" "$SRC/server.js"
 cp -f "$UP/routes/leads.js" "$SRC/routes/leads.js"
+cp -f "$UP/routes/services.js" "$SRC/routes/services.js"
 cp -f "$UP/routes/faqs.js" "$SRC/routes/faqs.js"
 cp -f "$UP/utils/ensureFaqsSeeded.js" "$SRC/utils/ensureFaqsSeeded.js"
 cp -f "$UP/package.json" "$SRC/package.json" 2>/dev/null || true
 
 echo "=== Verify source API_VERSION ==="
 grep "API_VERSION" "$SRC/server.js"
-grep -n "rooftop_area_unit\\|finance_type\\|Troubleshooting" "$SRC/routes/leads.js" "$SRC/utils/ensureFaqsSeeded.js" | head -20
+grep -n "consumer_phone\\|COALESCE(sr.account_id" "$SRC/routes/services.js" | head -20
+grep -n "rooftop_area_unit\\|finance_type\\|Troubleshooting" "$SRC/routes/leads.js" "$SRC/utils/ensureFaqsSeeded.js" | head -10
 
 echo "=== Docker build ==="
 docker build --build-arg CACHE_BUST=$(date +%s) -t "$IMG" "$SRC"
