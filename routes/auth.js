@@ -11,8 +11,91 @@ const {
   resolveLinkAppUserId,
 } = require('../utils/appAccess');
 const { buildProjectsForAuthUserId } = require('../utils/projectBuilders');
+const { sendPasswordResetOtp } = require('../utils/mailer');
 
 const router = express.Router();
+
+/** email(lower) -> { otpHash, userId, source, expiresAt } */
+const passwordResetOtps = new Map();
+
+function hashOtp(otp) {
+  return crypto.createHash('sha256').update(String(otp)).digest('hex');
+}
+
+async function findAccountForPasswordReset(email) {
+  const normalized = String(email || '').trim();
+  if (!normalized) return null;
+
+  try {
+    const ua = await pool.query(
+      `SELECT id, name, email FROM user_app
+       WHERE LOWER(TRIM(email)) = LOWER(TRIM($1))
+       LIMIT 1`,
+      [normalized]
+    );
+    if (ua.rows.length > 0) {
+      return {
+        userId: ua.rows[0].id,
+        name: ua.rows[0].name,
+        email: ua.rows[0].email || normalized,
+        source: 'user_app',
+      };
+    }
+  } catch (e) {
+    if (e.code !== '42P01') throw e;
+  }
+
+  const authUser = await findAuthUserByLogin(normalized);
+  if (!authUser) return null;
+
+  const displayName =
+    [authUser.first_name, authUser.last_name].filter(Boolean).join(' ').trim() ||
+    authUser.username ||
+    authUser.email ||
+    'User';
+
+  return {
+    userId: authUser.id,
+    name: displayName,
+    email: authUser.email || normalized,
+    source: 'auth_user',
+  };
+}
+
+async function updateAccountPassword(source, userId, passwordHash) {
+  if (source === 'user_app') {
+    await pool.query('UPDATE user_app SET password_hash = $1 WHERE id = $2', [
+      passwordHash,
+      userId,
+    ]);
+    return;
+  }
+
+  if (source === 'auth_user') {
+    const columnCheck = await pool.query(`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'auth_user'
+        AND column_name IN ('password', 'password_hash')
+    `);
+    const cols = columnCheck.rows.map((r) => r.column_name);
+    if (cols.includes('password')) {
+      await pool.query('UPDATE auth_user SET password = $1 WHERE id = $2', [
+        passwordHash,
+        userId,
+      ]);
+    } else if (cols.includes('password_hash')) {
+      await pool.query('UPDATE auth_user SET password_hash = $1 WHERE id = $2', [
+        passwordHash,
+        userId,
+      ]);
+    } else {
+      throw new Error('auth_user has no password column');
+    }
+    return;
+  }
+
+  throw new Error(`Unsupported auth source: ${source}`);
+}
 
 // Helper function to verify Django PBKDF2 password
 // Format: pbkdf2_sha256$<iterations>$<salt>$<hash>
@@ -530,7 +613,7 @@ router.post('/verify-fetch-projects', authenticate, [
   }
 });
 
-// Forgot Password
+// Forgot Password — emails a 6-digit OTP (user_app or auth_user)
 router.post('/forgot-password', [
   body('email').isEmail().withMessage('Valid email is required'),
 ], async (req, res) => {
@@ -540,40 +623,56 @@ router.post('/forgot-password', [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { email } = req.body;
+    const email = String(req.body.email || '').trim();
+    const account = await findAccountForPasswordReset(email);
 
-    // Check if user exists
-    const result = await pool.query(
-      'SELECT id, name FROM users WHERE email = $1',
-      [email]
-    );
+    // Always return the same message when no account (prevent email enumeration)
+    if (!account) {
+      return res.json({
+        success: true,
+        message:
+          'If an account exists with this email, a password reset code has been sent.',
+      });
+    }
 
-    // Always return success to prevent email enumeration
-    res.json({
-      message: 'If an account exists with this email, a password reset link has been sent.',
+    const otp = String(Math.floor(100000 + Math.random() * 900000));
+    passwordResetOtps.set(String(account.email).toLowerCase(), {
+      otpHash: hashOtp(otp),
+      userId: account.userId,
+      source: account.source,
+      expiresAt: Date.now() + 60 * 60 * 1000,
     });
 
-    // In production, send email with reset token
-    if (result.rows.length > 0) {
-      // Generate reset token
-      const resetToken = jwt.sign(
-        { userId: result.rows[0].id, type: 'password-reset' },
-        process.env.JWT_SECRET,
-        { expiresIn: '1h' }
-      );
-
-      // TODO: Send email with reset link
-      console.log(`Password reset token for ${email}: ${resetToken}`);
+    try {
+      await sendPasswordResetOtp({
+        to: account.email,
+        name: account.name,
+        otp,
+      });
+    } catch (mailErr) {
+      passwordResetOtps.delete(String(account.email).toLowerCase());
+      console.error('Forgot password email error:', mailErr.message);
+      return res.status(503).json({
+        success: false,
+        message:
+          mailErr.code === 'SMTP_NOT_CONFIGURED'
+            ? 'Email service is not configured on the server. Contact support.'
+            : 'Failed to send reset email. Please try again later.',
+      });
     }
+
+    return res.json({
+      success: true,
+      message: 'If an account exists with this email, a password reset code has been sent.',
+    });
   } catch (error) {
     console.error('Forgot password error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
-// Reset Password
+// Reset Password — email + OTP (preferred) or legacy JWT token
 router.post('/reset-password', [
-  body('token').notEmpty().withMessage('Token is required'),
   body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
 ], async (req, res) => {
   try {
@@ -582,27 +681,53 @@ router.post('/reset-password', [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { token, password } = req.body;
+    const { token, email, otp, password } = req.body;
+    let userId;
+    let source;
 
-    // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (decoded.type !== 'password-reset') {
-      return res.status(400).json({ message: 'Invalid token' });
+    if (email && otp) {
+      const key = String(email).trim().toLowerCase();
+      const entry = passwordResetOtps.get(key);
+      if (!entry || entry.expiresAt < Date.now()) {
+        passwordResetOtps.delete(key);
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid or expired reset code',
+        });
+      }
+      if (entry.otpHash !== hashOtp(String(otp).trim())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid or expired reset code',
+        });
+      }
+      userId = entry.userId;
+      source = entry.source;
+      passwordResetOtps.delete(key);
+    } else if (token) {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      if (decoded.type !== 'password-reset') {
+        return res.status(400).json({ success: false, message: 'Invalid token' });
+      }
+      userId = decoded.userId;
+      source = decoded.source || 'user_app';
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Email and OTP are required',
+      });
     }
 
-    // Hash new password
     const passwordHash = await bcrypt.hash(password, 10);
+    await updateAccountPassword(source, userId, passwordHash);
 
-    // Update password
-    await pool.query(
-      'UPDATE users SET password_hash = $1 WHERE id = $2',
-      [passwordHash, decoded.userId]
-    );
-
-    res.json({ message: 'Password reset successful' });
+    res.json({ success: true, message: 'Password reset successful' });
   } catch (error) {
     console.error('Reset password error:', error);
-    res.status(400).json({ message: 'Invalid or expired token' });
+    res.status(400).json({
+      success: false,
+      message: 'Invalid or expired reset code',
+    });
   }
 });
 
