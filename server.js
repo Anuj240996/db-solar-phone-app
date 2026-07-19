@@ -30,6 +30,13 @@ for (const mediaRoot of mediaCandidates) {
   }
 }
 
+// Always serve bundled project-type images (cust_type thumbnails) from this app.
+const projectTypesMedia = path.join(__dirname, 'media', 'project_types');
+if (fs.existsSync(projectTypesMedia)) {
+  app.use('/media/project_types', express.static(projectTypesMedia));
+  console.log(`Serving /media/project_types from ${projectTypesMedia}`);
+}
+
 // Routes — mount service-requests alias BEFORE complaints router
 const servicesRouter = require('./routes/services');
 app.use('/api/auth', require('./routes/auth'));
@@ -49,7 +56,7 @@ app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/stats', require('./routes/stats'));
 
 // Health check — apiVersion confirms phone-app has project-link + QR routes deployed
-const API_VERSION = '1.3.6';
+const API_VERSION = '1.3.7';
 const BUILD_STAMP = process.env.BUILD_STAMP || 'local';
 
 async function runStartupMigrations() {

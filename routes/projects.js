@@ -17,7 +17,7 @@ const {
   fetchCustomerResultForCustomer,
   computeProjectStatusFromResult,
 } = require('../utils/customerResult');
-const { buildProjectsForAuthUserId } = require('../utils/projectBuilders');
+const { buildProjectsForAuthUserId, buildProjectTypeImageUrl } = require('../utils/projectBuilders');
 const { buildProgressFallback } = require('../utils/buildProjectProgress');
 const { verifyAuthUserCredentials } = require('../utils/authUserVerify');
 const path = require('path');
@@ -423,7 +423,7 @@ router.post('/external', authenticate, async (req, res) => {
       status: 'Pending',
       plantCapacity: String(row.plant_capacity || '0'),
       powerGeneration: '0',
-      projectImage: null,
+      projectImage: buildProjectTypeImageUrl(row),
       customerId: row.cust_id,
       phone: row.phone,
       email: row.email,
@@ -447,7 +447,9 @@ function buildProjectFromCustomerRow(row, status = 'Pending') {
     status,
     plantCapacity: String(row.plant_capacity || '0'),
     powerGeneration: '0',
-    projectImage: null,
+    projectImage: buildProjectTypeImageUrl(row),
+    cust_type: row.cust_type || null,
+    custType: row.cust_type || null,
     customerId: row.cust_id,
     phone: row.phone,
     email: row.email,
@@ -1438,7 +1440,7 @@ router.get('/:projectId', authenticate, async (req, res) => {
       electricityProduction: electricityProduction,
       storageOrInGrid: storageOrInGrid,
       totalPanel: totalPanel,
-      projectImage: null,
+      projectImage: buildProjectTypeImageUrl(customer),
       products: products,
       progress: progressData, // Include progress data
       releaseAgreement,

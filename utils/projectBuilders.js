@@ -8,6 +8,58 @@ const CUSTOMER_SELECT = `cust_id, consumer, first_name, last_name, middle_name,
   email, phone, address, city, state, comp_name, new_customer_id, plant_capacity, qunt_solar,
   cust_type, project_type, po_date, solar_pump`;
 
+/** Map DB cust_type / project_type (incl. typos) → media filename key. */
+function resolveCustTypeKey(customer = {}) {
+  const tokens = [
+    customer.cust_type,
+    customer.custType,
+    customer.project_type,
+    customer.projectType,
+  ]
+    .filter(Boolean)
+    .map((v) => String(v).trim().toLowerCase());
+
+  for (const value of tokens) {
+    if (!value || value === 'null' || value === 'n/a' || value === 'na') continue;
+    if (value.includes('industr')) return 'industrial';
+    if (value.includes('commer') || value.includes('commers')) return 'commercial';
+    if (value.includes('resid')) return 'residential';
+    if (value.includes('govern') || value.includes('goverment')) return 'government';
+    if (
+      value.includes('water') ||
+      value.includes('pump') ||
+      value.includes('agricultur') ||
+      value.includes('agri') ||
+      value.includes('farm')
+    ) {
+      return 'water_pump';
+    }
+    if (value.includes('rooftop')) return 'residential';
+  }
+
+  const solarPump = customer.solar_pump;
+  if (solarPump != null) {
+    const s = String(solarPump).trim().toLowerCase();
+    if (s && s !== '0' && s !== 'false' && s !== 'null' && s !== 'n') {
+      return 'water_pump';
+    }
+  }
+
+  return null;
+}
+
+/** Absolute or path URL for project-type image served from /media/project_types/. */
+function buildProjectTypeImageUrl(customer) {
+  const key = resolveCustTypeKey(customer);
+  if (!key) return null;
+  const relative = `/media/project_types/${key}.jpg`;
+  const base = (process.env.MEDIA_BASE_URL || process.env.PUBLIC_BASE_URL || '')
+    .toString()
+    .trim()
+    .replace(/\/$/, '');
+  return base ? `${base}${relative}` : relative;
+}
+
 function mapCustomerToProject(customer, authUserId = null) {
   const projectName =
     customer.comp_name ||
@@ -42,7 +94,7 @@ function mapCustomerToProject(customer, authUserId = null) {
     customerId: customer.cust_id,
     totalGeneration: null,
     todayGeneration: null,
-    projectImage: null,
+    projectImage: buildProjectTypeImageUrl(customer),
     ...(authUserId != null ? { originalAuthUserId: authUserId } : {}),
   };
 }
@@ -90,4 +142,6 @@ module.exports = {
   buildProjectsFromCustomerRows,
   queryCustomersByOwnerAuthIds,
   buildProjectsForAuthUserId,
+  resolveCustTypeKey,
+  buildProjectTypeImageUrl,
 };
