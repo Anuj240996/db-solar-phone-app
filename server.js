@@ -56,8 +56,13 @@ app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/stats', require('./routes/stats'));
 
 // Health check — apiVersion confirms phone-app has project-link + QR routes deployed
-const API_VERSION = '1.3.7';
-const BUILD_STAMP = process.env.BUILD_STAMP || 'local';
+const API_VERSION = '1.3.8';
+const CACHE_BUST_FILE = path.join(__dirname, '.cache-bust');
+const BUILD_STAMP =
+  process.env.BUILD_STAMP ||
+  (fs.existsSync(CACHE_BUST_FILE)
+    ? fs.readFileSync(CACHE_BUST_FILE, 'utf8').trim()
+    : 'local');
 
 async function runStartupMigrations() {
   try {
@@ -116,6 +121,7 @@ app.get('/api/health', async (req, res) => {
       companyStats: true,
       crmLeadsInsert: true,
       faqAutoSeed: true,
+      custTypeProjectImages: true,
     },
   });
 });
