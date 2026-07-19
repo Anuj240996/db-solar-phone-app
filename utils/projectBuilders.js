@@ -5,7 +5,8 @@ const {
 } = require('./customerResult');
 
 const CUSTOMER_SELECT = `cust_id, consumer, first_name, last_name, middle_name,
-  email, phone, address, city, state, comp_name, new_customer_id, plant_capacity, qunt_solar`;
+  email, phone, address, city, state, comp_name, new_customer_id, plant_capacity, qunt_solar,
+  cust_type, project_type, po_date, solar_pump`;
 
 function mapCustomerToProject(customer, authUserId = null) {
   const projectName =
@@ -18,6 +19,8 @@ function mapCustomerToProject(customer, authUserId = null) {
     projectId: customer.cust_id,
     projectName,
     consumer: customer.consumer,
+    city: customer.city || null,
+    state: customer.state || null,
     location:
       `${customer.city || ''}, ${customer.state || ''}`.trim().replace(/^,\s*/, '').replace(/,\s*$/, '') ||
       customer.address ||
@@ -29,6 +32,13 @@ function mapCustomerToProject(customer, authUserId = null) {
         : '0',
     qunt_solar: customer.qunt_solar,
     quntSolar: customer.qunt_solar,
+    cust_type: customer.cust_type || null,
+    custType: customer.cust_type || null,
+    project_type: customer.project_type || null,
+    projectType: customer.project_type || null,
+    solar_pump: customer.solar_pump || null,
+    po_date: customer.po_date || null,
+    poDate: customer.po_date || null,
     customerId: customer.cust_id,
     totalGeneration: null,
     todayGeneration: null,
