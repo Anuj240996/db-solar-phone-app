@@ -56,7 +56,7 @@ app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/stats', require('./routes/stats'));
 
 // Health check — apiVersion confirms phone-app has project-link + QR routes deployed
-const API_VERSION = '1.3.8';
+const API_VERSION = '1.3.9';
 const CACHE_BUST_FILE = path.join(__dirname, '.cache-bust');
 const BUILD_STAMP =
   process.env.BUILD_STAMP ||

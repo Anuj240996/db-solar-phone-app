@@ -228,8 +228,14 @@ router.post('/signup', [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { name, email, phone, password, address } = req.body;
+    const { name, email, phone, password, address, role: roleRaw } = req.body;
     const trimmedName = String(name || '').trim();
+    const requestedRole = String(roleRaw || 'customer').trim().toLowerCase();
+    const isAssociate =
+      requestedRole === 'associate' ||
+      requestedRole === 'aso' ||
+      trimmedName.toLowerCase().startsWith('aso_');
+    const role = isAssociate ? 'associate' : 'customer';
 
     // Check if user exists
     // Ensure email uniqueness across user_app table
@@ -245,13 +251,12 @@ router.post('/signup', [
     // Hash password
     const passwordHash = await bcrypt.hash(password, 10);
 
-    // Create user
-    // Insert into user_app table for mobile/app users
+    // Create user — role customer (default) or associate (aso_ / role body)
     const result = await pool.query(
       `INSERT INTO user_app (name, email, phone, password_hash, address, role)
-       VALUES ($1, $2, $3, $4, $5, 'customer')
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id, name, email, phone, role, address, created_at`,
-      [trimmedName, email, phone, passwordHash, address || null]
+      [trimmedName, email, phone, passwordHash, address || null, role]
     );
 
     const user = result.rows[0];
@@ -399,13 +404,24 @@ router.post('/login', [
           { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
         );
 
+        let role = uaUser.role || 'customer';
+        const nameLower = String(uaUser.name || '').trim().toLowerCase();
+        const emailLower = String(uaUser.email || '').trim().toLowerCase();
+        if (
+          role === 'associate' ||
+          nameLower.startsWith('aso_') ||
+          emailLower.startsWith('aso_')
+        ) {
+          role = 'associate';
+        }
+
         return res.json(
           buildLoginResponse(token, {
             id: uaUser.id,
             name: uaUser.name,
             email: uaUser.email,
             phone: uaUser.phone,
-            role: uaUser.role,
+            role,
             address: uaUser.address,
             createdAt: uaUser.created_at,
           })
@@ -442,11 +458,19 @@ router.post('/login', [
       authUser.email ||
       'User';
 
+    const loginLower = String(loginId || '').trim().toLowerCase();
+    const usernameLower = String(authUser.username || '').trim().toLowerCase();
+    const authRole =
+      loginLower.startsWith('aso_') || usernameLower.startsWith('aso_')
+        ? 'associate'
+        : 'customer';
+
     const token = jwt.sign(
       {
         userId: String(authUser.id),
         email: authUser.email || loginId,
         source: 'auth_user',
+        role: authRole,
       },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
@@ -458,7 +482,7 @@ router.post('/login', [
         name: displayName,
         email: authUser.email || loginId,
         phone: '',
-        role: 'customer',
+        role: authRole,
         address: '',
       })
     );
