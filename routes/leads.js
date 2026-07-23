@@ -381,7 +381,7 @@ router.post('/', authenticate, [
       created_at: now,
       updated_at: now,
       extra: extraJson,
-      assigned_to_id: null,
+      assigned_to_id: appUserId ?? null,
       alternate_phone: alternate_phone != null ? String(alternate_phone) : 'NA',
       notes: notes != null ? String(notes) : 'NA',
       internal_notes: internal_notes != null ? String(internal_notes) : 'NA',

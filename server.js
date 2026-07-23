@@ -49,6 +49,7 @@ app.use('/api/complaints', require('./routes/complaints'));
 app.use('/api/faqs', require('./routes/faqs'));
 app.use('/api/quotations', require('./routes/quotations'));
 app.use('/api/leads', require('./routes/leads'));
+app.use('/api/associate', require('./routes/associate'));
 app.use('/api/support', require('./routes/support'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/growatt', require('./routes/growatt'));
@@ -56,21 +57,18 @@ app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/stats', require('./routes/stats'));
 
 // Health check — apiVersion confirms phone-app has project-link + QR routes deployed
-const API_VERSION = '1.3.9';
-const CACHE_BUST_FILE = path.join(__dirname, '.cache-bust');
-const BUILD_STAMP =
-  process.env.BUILD_STAMP ||
-  (fs.existsSync(CACHE_BUST_FILE)
-    ? fs.readFileSync(CACHE_BUST_FILE, 'utf8').trim()
-    : 'local');
+const API_VERSION = '1.4.0';
+const BUILD_STAMP = process.env.BUILD_STAMP || 'local';
 
 async function runStartupMigrations() {
   try {
     const { ensureLeadsLeadSchema } = require('./utils/ensureLeadsLeadSchema');
     const { ensureSupportSchema } = require('./utils/ensureSupportSchema');
+    const { ensureAssociateAuthUserColumn } = require('./utils/associateAccess');
     const pool = require('./database/db');
     await ensureLeadsLeadSchema();
     await ensureSupportSchema();
+    await ensureAssociateAuthUserColumn();
     await pool.query(
       `ALTER TABLE firereport_firereport ALTER COLUMN assignby DROP NOT NULL`
     ).catch(() => {});
@@ -111,7 +109,7 @@ app.get('/api/health', async (req, res) => {
     apiVersion: API_VERSION,
     buildStamp: BUILD_STAMP,
     database,
-    features: {
+      features: {
       importFromQr: true,
       verifyFetchProjects: true,
       linkedProjectList: true,
@@ -121,7 +119,7 @@ app.get('/api/health', async (req, res) => {
       companyStats: true,
       crmLeadsInsert: true,
       faqAutoSeed: true,
-      custTypeProjectImages: true,
+      associateDashboard: true,
     },
   });
 });
