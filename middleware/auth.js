@@ -1,4 +1,4 @@
-const jwt = require('jsonwebtoken');
+﻿const jwt = require('jsonwebtoken');
 const pool = require('../database/db');
 
 const authenticate = async (req, res, next) => {
@@ -13,19 +13,12 @@ const authenticate = async (req, res, next) => {
     const jwtSource = decoded.source || null;
     const jwtUserId = decoded.userId != null ? String(decoded.userId) : null;
 
-    console.log('🔐 Authenticating request for userId:', jwtUserId, 'source:', jwtSource || 'unknown');
+    console.log('≡ƒöÉ Authenticating request for userId:', jwtUserId, 'source:', jwtSource || 'unknown');
 
     const attachJwtMeta = (user) => {
       user.jwt_source = jwtSource;
       user.jwt_user_id = jwtUserId;
       if (decoded.email) user.jwt_email = decoded.email;
-      if (decoded.role) {
-        user.jwt_role = decoded.role;
-        // Prefer JWT role for associate staff sessions
-        if (!user.role || String(decoded.role).toLowerCase() === 'associate') {
-          user.role = decoded.role;
-        }
-      }
       return user;
     };
 
@@ -43,7 +36,7 @@ const authenticate = async (req, res, next) => {
           return;
         }
       } catch (uaErr) {
-        console.error('⚠️ Error querying user_app (jwt source):', uaErr.message);
+        console.error('ΓÜá∩╕Å Error querying user_app (jwt source):', uaErr.message);
       }
     }
     
@@ -69,14 +62,14 @@ const authenticate = async (req, res, next) => {
         `);
         
         availableColumns = columnCheck.rows.map(r => r.column_name);
-        console.log('📋 Available columns in auth_user:', availableColumns.join(', '));
+        console.log('≡ƒôï Available columns in auth_user:', availableColumns.join(', '));
       } catch (columnError) {
-        console.error('❌ Error checking auth_user columns:', columnError.message);
+        console.error('Γ¥î Error checking auth_user columns:', columnError.message);
         // Continue with empty columns, will fall back to users table
         availableColumns = [];
       }
     } else {
-      console.log('⚠️ auth_user table does not exist, will check users table only');
+      console.log('ΓÜá∩╕Å auth_user table does not exist, will check users table only');
     }
     
     // Build name field based on available columns
@@ -146,9 +139,6 @@ const authenticate = async (req, res, next) => {
     } else {
       lastLoginField = 'NULL as last_login';
     }
-
-    let staffField = availableColumns.includes('is_staff') ? 'is_staff' : 'NULL as is_staff';
-    let usernameField = availableColumns.includes('username') ? 'username' : 'NULL as username';
     
     let result = { rows: [] };
     
@@ -163,20 +153,18 @@ const authenticate = async (req, res, next) => {
           ${roleField},
           ${addressField},
           ${createdAtField},
-          ${lastLoginField},
-          ${staffField},
-          ${usernameField}
+          ${lastLoginField}
         FROM auth_user 
         WHERE id = $1
       `;
       
-      console.log('📝 Querying auth_user with dynamic columns');
+      console.log('≡ƒô¥ Querying auth_user with dynamic columns');
       console.log('   Query:', selectQuery);
       
       try {
         result = await pool.query(selectQuery, [decoded.userId]);
       } catch (queryError) {
-        console.error('❌ Error querying auth_user:', queryError.message);
+        console.error('Γ¥î Error querying auth_user:', queryError.message);
         console.error('   Query was:', selectQuery);
         // Continue to try users table
         result = { rows: [] };
@@ -186,20 +174,20 @@ const authenticate = async (req, res, next) => {
     // If not found in auth_user, try user_app table (app-registered users)
     if (result.rows.length === 0) {
       try {
-        console.log('🔵 Checking user_app table for userId:', decoded.userId);
+        console.log('≡ƒö╡ Checking user_app table for userId:', decoded.userId);
         const ua = await pool.query(
           'SELECT id, name, email, phone, role, address, created_at, last_login FROM user_app WHERE id = $1',
           [decoded.userId]
         );
         if (ua.rows.length > 0) {
-          console.log('✅ Found user in user_app table');
+          console.log('Γ£à Found user in user_app table');
           req.user = attachJwtMeta(ua.rows[0]);
           req.user.auth_source = 'user_app';
           next();
           return;
         }
       } catch (uaErr) {
-        console.error('⚠️ Error querying user_app table:', uaErr.message);
+        console.error('ΓÜá∩╕Å Error querying user_app table:', uaErr.message);
       }
     }
 
@@ -213,26 +201,14 @@ const authenticate = async (req, res, next) => {
     }
 
     if (result.rows.length === 0) {
-      console.log('❌ User not found in either table');
+      console.log('Γ¥î User not found in either table');
       return res.status(401).json({ message: 'User not found' });
     }
 
     const authUser = result.rows[0];
     // mark source for downstream handlers
     authUser.auth_source = 'auth_user';
-    // Associate staff sessions: honor JWT role or is_staff flag (do not treat as consumer)
-    if (decoded.role) {
-      authUser.role = decoded.role;
-    } else if (
-      authUser.is_staff === true ||
-      String(authUser.is_staff).toLowerCase() === 'true' ||
-      String(authUser.is_staff) === '1'
-    ) {
-      authUser.role = 'associate';
-    } else if (!authUser.role) {
-      authUser.role = 'customer';
-    }
-    console.log('✅ User authenticated:', authUser.email || authUser.name);
+    console.log('Γ£à User authenticated:', authUser.email || authUser.name);
     console.log('   User ID type:', typeof authUser.id, 'Value:', authUser.id);
     
     // Check if ID is an integer (not a UUID)
@@ -252,7 +228,7 @@ const authenticate = async (req, res, next) => {
           
           if (usersTableResult.rows.length > 0) {
             const usersTableUser = usersTableResult.rows[0];
-            console.log('   ✅ Found UUID in users table:', usersTableUser.id);
+            console.log('   Γ£à Found UUID in users table:', usersTableUser.id);
             // Use UUID from users table, but keep auth_user data for other fields
             req.user = {
               ...usersTableUser,
@@ -262,13 +238,13 @@ const authenticate = async (req, res, next) => {
             next();
             return;
           } else {
-            console.log('   ⚠️ No matching user found in users table by email:', authUser.email);
+            console.log('   ΓÜá∩╕Å No matching user found in users table by email:', authUser.email);
           }
         }
         
         // If not found by email, we need to handle this case
         // For now, we'll use the auth_user data but this will cause UUID errors
-        console.log('   ⚠️ Warning: Using integer ID which may cause UUID errors in other queries');
+        console.log('   ΓÜá∩╕Å Warning: Using integer ID which may cause UUID errors in other queries');
         req.user = attachJwtMeta({
           ...authUser,
           id: authUser.id.toString(),
@@ -276,7 +252,7 @@ const authenticate = async (req, res, next) => {
           auth_source: 'auth_user',
         });
       } catch (uuidLookupError) {
-        console.error('   ❌ Error looking up UUID:', uuidLookupError.message);
+        console.error('   Γ¥î Error looking up UUID:', uuidLookupError.message);
         req.user = attachJwtMeta({ ...authUser, auth_source: 'auth_user' });
       }
     } else {
@@ -286,12 +262,12 @@ const authenticate = async (req, res, next) => {
     
     next();
   } catch (error) {
-    console.error('❌ Authentication error:', error.message);
-    console.error('❌ Error stack:', error.stack);
+    console.error('Γ¥î Authentication error:', error.message);
+    console.error('Γ¥î Error stack:', error.stack);
     
     // If it's a database/query error, return 500, otherwise 401
     if (error.code && error.code.startsWith('42')) { // PostgreSQL syntax errors
-      console.error('❌ SQL syntax error in authentication middleware');
+      console.error('Γ¥î SQL syntax error in authentication middleware');
       return res.status(500).json({ 
         message: 'Server error', 
         error: process.env.NODE_ENV === 'development' ? error.message : undefined 

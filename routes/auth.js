@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
@@ -135,7 +135,7 @@ function verifyDjangoPBKDF2(password, hash) {
         const derivedHex = derivedKey.toString('hex');
         // Log mismatch details in development to help debugging
         if (process.env.NODE_ENV !== 'production') {
-          console.log('🔍 PBKDF2 compare fallback string forms');
+          console.log('≡ƒöì PBKDF2 compare fallback string forms');
           console.log('   storedHash (raw):', storedHashBase64);
           console.log('   derivedHashBase64:', derivedHashBase64);
           console.log('   derivedHex:', derivedHex);
@@ -147,7 +147,7 @@ function verifyDjangoPBKDF2(password, hash) {
     // Ensure buffers are same length for timing-safe comparison
     if (storedBuffer.length !== derivedBuffer.length) {
       if (process.env.NODE_ENV !== 'production') {
-        console.log('🔍 PBKDF2 length mismatch');
+        console.log('≡ƒöì PBKDF2 length mismatch');
         console.log('   storedBuffer.length:', storedBuffer.length);
         console.log('   derivedBuffer.length:', derivedBuffer.length);
         try {
@@ -163,7 +163,7 @@ function verifyDjangoPBKDF2(password, hash) {
     const equal = crypto.timingSafeEqual(storedBuffer, derivedBuffer);
     if (!equal && process.env.NODE_ENV !== 'production') {
       try {
-        console.log('🔍 PBKDF2 mismatch details:');
+        console.log('≡ƒöì PBKDF2 mismatch details:');
         console.log('   storedHash (raw):', storedHashBase64);
         console.log('   derivedHashBase64:', derivedHashBase64);
         console.log('   storedHex:', Buffer.from(storedBuffer).toString('hex'));
@@ -194,23 +194,23 @@ async function verifyPassword(password, hash) {
       password = password.normalize('NFKC');
     }
   } catch (normErr) {
-    console.warn('⚠️ Password normalization failed:', normErr.message);
+    console.warn('ΓÜá∩╕Å Password normalization failed:', normErr.message);
   }
 
   // Check if it's Django PBKDF2 format
   if (isDjangoPBKDF2(hash)) {
     const ok = verifyDjangoPBKDF2(password, hash);
-    console.log('🔐 verifyPassword: Django PBKDF2 result =', ok);
+    console.log('≡ƒöÉ verifyPassword: Django PBKDF2 result =', ok);
     return ok;
   }
 
   // Otherwise, assume it's bcrypt
   try {
     const ok = await bcrypt.compare(password, hash);
-    console.log('🔐 verifyPassword: bcrypt result =', ok);
+    console.log('≡ƒöÉ verifyPassword: bcrypt result =', ok);
     return ok;
   } catch (e) {
-    console.warn('⚠️ verifyPassword bcrypt compare error:', e.message);
+    console.warn('ΓÜá∩╕Å verifyPassword bcrypt compare error:', e.message);
     return false;
   }
 }
@@ -251,7 +251,7 @@ router.post('/signup', [
     // Hash password
     const passwordHash = await bcrypt.hash(password, 10);
 
-    // Create user — role customer (default) or associate (aso_ / role body)
+    // Create user ΓÇö role customer (default) or associate (aso_ / role body)
     const result = await pool.query(
       `INSERT INTO user_app (name, email, phone, password_hash, address, role)
        VALUES ($1, $2, $3, $4, $5, $6)
@@ -260,7 +260,7 @@ router.post('/signup', [
     );
 
     const user = result.rows[0];
-    console.log(`✅ user_app created: id=${user.id}, name="${user.name}", email=${user.email}`);
+    console.log(`Γ£à user_app created: id=${user.id}, name="${user.name}", email=${user.email}`);
 
     // Update last login for user_app (was previously updating users table)
     try {
@@ -269,10 +269,10 @@ router.post('/signup', [
         [user.id]
       );
     } catch (updateErr) {
-      console.warn('⚠️ Could not update last_login in user_app:', updateErr.message);
+      console.warn('ΓÜá∩╕Å Could not update last_login in user_app:', updateErr.message);
     }
 
-    // Generate token — source: user_app avoids id collision with auth_user in middleware
+    // Generate token ΓÇö source: user_app avoids id collision with auth_user in middleware
     const token = jwt.sign(
       { userId: String(user.id), email: user.email, source: 'user_app' },
       process.env.JWT_SECRET,
@@ -323,29 +323,12 @@ async function findAuthUserByLogin(username) {
   if (cols.includes('email')) selectFields.push('email');
   if (cols.includes('first_name')) selectFields.push('first_name');
   if (cols.includes('last_name')) selectFields.push('last_name');
-  if (cols.includes('is_staff')) selectFields.push('is_staff');
   if (cols.includes('password_hash')) selectFields.push('password_hash');
   else if (cols.includes('password')) selectFields.push('password as password_hash');
 
   const q = `SELECT ${selectFields.join(', ')} FROM auth_user ${whereClause} LIMIT 1`;
   const result = await pool.query(q, [username.trim()]);
   return result.rows[0] || null;
-}
-
-function bitFlagTrue(value) {
-  if (value === true || value === 1) return true;
-  const s = String(value ?? '').trim().toLowerCase();
-  return s === 'true' || s === '1' || s === 't' || s === 'yes';
-}
-
-/** Staff / associate accounts in auth_user (is_staff). Consumers are DB_* / non-staff. */
-function isAssociateAuthUser(authUser) {
-  if (!authUser) return false;
-  const username = String(authUser.username || '').trim().toLowerCase();
-  if (username.startsWith('aso_')) return true;
-  if (username.startsWith('db_')) return false;
-  if (bitFlagTrue(authUser.is_staff)) return true;
-  return false;
 }
 
 function buildLoginResponse(token, user) {
@@ -356,39 +339,7 @@ function buildLoginResponse(token, user) {
   };
 }
 
-function issueAssociateAuthUserToken(authUser, loginId) {
-  const displayName =
-    [authUser.first_name, authUser.last_name].filter(Boolean).join(' ').trim() ||
-    authUser.username ||
-    authUser.email ||
-    loginId ||
-    'Associate';
-
-  const token = jwt.sign(
-    {
-      userId: String(authUser.id),
-      email: authUser.email || loginId,
-      source: 'auth_user',
-      role: 'associate',
-    },
-    process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
-  );
-
-  return buildLoginResponse(token, {
-    id: authUser.id,
-    name: displayName,
-    email: authUser.email || loginId,
-    phone: '',
-    role: 'associate',
-    address: '',
-    username: authUser.username || null,
-  });
-}
-
-// App Login:
-// - Associate → auth_user staff only (username/password from auth_user)
-// - Consumer → user_app / non-staff auth_user (previous logic unchanged)
+// App Login: user_app first, then auth_user (legacy/Django accounts)
 router.post('/login', [
   body('username').trim().notEmpty().withMessage('Username is required'),
   body('password').notEmpty().withMessage('Password is required'),
@@ -400,7 +351,7 @@ router.post('/login', [
     }
 
     if (!process.env.JWT_SECRET) {
-      console.error('❌ Login failed: JWT_SECRET is not set in environment');
+      console.error('Γ¥î Login failed: JWT_SECRET is not set in environment');
       return res.status(500).json({
         success: false,
         message: 'Server misconfiguration: JWT_SECRET is missing. Set it in backend .env and restart.',
@@ -409,31 +360,9 @@ router.post('/login', [
 
     const { username, password } = req.body;
     const loginId = String(username).trim();
-    console.log('🔵 App login attempt for:', loginId);
+    console.log('≡ƒö╡ App login attempt for:', loginId);
 
-    // ASSOCIATE: verify ONLY against auth_user staff accounts
-    try {
-      const staffCandidate = await findAuthUserByLogin(loginId);
-      if (staffCandidate && isAssociateAuthUser(staffCandidate)) {
-        const storedHash =
-          staffCandidate.password_hash ||
-          staffCandidate.password ||
-          staffCandidate.passwordHash;
-        if (!storedHash) {
-          return res.status(401).json({ success: false, message: 'Invalid credentials' });
-        }
-        const authValid = await verifyPassword(password, storedHash);
-        if (!authValid) {
-          return res.status(401).json({ success: false, message: 'Invalid credentials' });
-        }
-        console.log('✅ Associate login via auth_user id=', staffCandidate.id, staffCandidate.username);
-        return res.json(issueAssociateAuthUserToken(staffCandidate, loginId));
-      }
-    } catch (asoErr) {
-      console.error('Associate auth_user login check failed:', asoErr.message);
-    }
-
-    // CONSUMER: user_app first (unchanged for normal customers)
+    // 1) user_app (app signup / bcrypt password_hash)
     try {
       const uaQuery = await pool.query(
         `SELECT id, name, email, phone, password_hash, role, address, created_at, last_login
@@ -445,28 +374,12 @@ router.post('/login', [
 
       if (uaQuery.rows.length > 0) {
         const uaUser = uaQuery.rows[0];
-        const nameLower = String(uaUser.name || '').trim().toLowerCase();
-        const roleLower = String(uaUser.role || '').trim().toLowerCase();
-        const isAsoUa =
-          roleLower === 'associate' ||
-          roleLower === 'aso' ||
-          nameLower.startsWith('aso_') ||
-          String(uaUser.email || '').trim().toLowerCase().startsWith('aso_');
-
-        if (isAsoUa) {
-          return res.status(401).json({
-            success: false,
-            message:
-              'Associate login uses staff username from auth_user (example: Nilesh_28), not this app email.',
-          });
-        }
-
         let valid = false;
         if (uaUser.password_hash) {
           try {
             valid = await bcrypt.compare(password, uaUser.password_hash);
           } catch (bcErr) {
-            console.error('❌ bcrypt.compare error for user_app:', bcErr.message);
+            console.error('Γ¥î bcrypt.compare error for user_app:', bcErr.message);
             return res.status(500).json({
               success: false,
               message: 'Invalid password format stored for this account. Reset password on server.',
@@ -486,10 +399,21 @@ router.post('/login', [
         }
 
         const token = jwt.sign(
-          { userId: String(uaUser.id), email: uaUser.email, source: 'user_app', role: 'customer' },
+          { userId: String(uaUser.id), email: uaUser.email, source: 'user_app' },
           process.env.JWT_SECRET,
           { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
         );
+
+        let role = uaUser.role || 'customer';
+        const nameLower = String(uaUser.name || '').trim().toLowerCase();
+        const emailLower = String(uaUser.email || '').trim().toLowerCase();
+        if (
+          role === 'associate' ||
+          nameLower.startsWith('aso_') ||
+          emailLower.startsWith('aso_')
+        ) {
+          role = 'associate';
+        }
 
         return res.json(
           buildLoginResponse(token, {
@@ -497,7 +421,7 @@ router.post('/login', [
             name: uaUser.name,
             email: uaUser.email,
             phone: uaUser.phone,
-            role: 'customer',
+            role,
             address: uaUser.address,
             createdAt: uaUser.created_at,
           })
@@ -505,29 +429,16 @@ router.post('/login', [
       }
     } catch (uaErr) {
       if (uaErr.code === '42P01') {
-        console.warn('⚠️ user_app table missing; trying auth_user login only');
+        console.warn('ΓÜá∩╕Å user_app table missing; trying auth_user login only');
       } else {
         throw uaErr;
       }
     }
 
-    // Consumer auth_user (e.g. DB_*) — non-staff only
+    // 2) auth_user (Django / staff accounts ΓÇö e.g. anuj@gmail.com may exist only here)
     const authUser = await findAuthUserByLogin(loginId);
     if (!authUser) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
-    }
-
-    if (isAssociateAuthUser(authUser)) {
-      const storedHashA =
-        authUser.password_hash || authUser.password || authUser.passwordHash;
-      if (!storedHashA) {
-        return res.status(401).json({ success: false, message: 'Invalid credentials' });
-      }
-      const okA = await verifyPassword(password, storedHashA);
-      if (!okA) {
-        return res.status(401).json({ success: false, message: 'Invalid credentials' });
-      }
-      return res.json(issueAssociateAuthUserToken(authUser, loginId));
     }
 
     const storedHash =
@@ -547,12 +458,19 @@ router.post('/login', [
       authUser.email ||
       'User';
 
+    const loginLower = String(loginId || '').trim().toLowerCase();
+    const usernameLower = String(authUser.username || '').trim().toLowerCase();
+    const authRole =
+      loginLower.startsWith('aso_') || usernameLower.startsWith('aso_')
+        ? 'associate'
+        : 'customer';
+
     const token = jwt.sign(
       {
         userId: String(authUser.id),
         email: authUser.email || loginId,
         source: 'auth_user',
-        role: 'customer',
+        role: authRole,
       },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
@@ -564,12 +482,12 @@ router.post('/login', [
         name: displayName,
         email: authUser.email || loginId,
         phone: '',
-        role: 'customer',
+        role: authRole,
         address: '',
       })
     );
   } catch (error) {
-    console.error('❌ Login error:', error);
+    console.error('Γ¥î Login error:', error);
     return res.status(500).json({
       success: false,
       message: 'Server error',
@@ -578,7 +496,6 @@ router.post('/login', [
     });
   }
 });
-
 
 // Verify credentials against auth_user table and fetch that user's projects (customers)
 router.post('/verify-fetch-projects', authenticate, [
@@ -619,19 +536,19 @@ router.post('/verify-fetch-projects', authenticate, [
     else if (availableColumns.includes('password')) selectFields.push('password as password_hash');
 
     const selectQuery = `SELECT ${selectFields.join(', ')} FROM auth_user ${whereClause}`;
-    console.log('📝 verify-fetch-projects request body:', req.body);
-    console.log('📝 Auth select query:', selectQuery);
+    console.log('≡ƒô¥ verify-fetch-projects request body:', req.body);
+    console.log('≡ƒô¥ Auth select query:', selectQuery);
     let result;
     try {
       result = await pool.query(selectQuery, [username]);
     } catch (queryErr) {
-      console.error('❌ SQL error on auth_user query:', queryErr.message);
+      console.error('Γ¥î SQL error on auth_user query:', queryErr.message);
       return res.status(500).json({ message: 'Server error' });
     }
 
-    console.log('📊 auth_user rows:', result.rows.length);
+    console.log('≡ƒôè auth_user rows:', result.rows.length);
     if (result.rows.length === 0) {
-      console.log('⚠️ No auth_user found for username/email:', username);
+      console.log('ΓÜá∩╕Å No auth_user found for username/email:', username);
       return res.status(401).json({ success: false, message: 'Invalid credentials', reason: 'user-not-found' });
     }
 
@@ -639,19 +556,19 @@ router.post('/verify-fetch-projects', authenticate, [
     // Verify password (bcrypt) - support different column names
     const storedHash = user.password_hash || user.password || user.passwordHash || user.passwordHash;
     if (!storedHash) {
-      console.log('❌ No password hash found on auth_user record for id:', user.id);
+      console.log('Γ¥î No password hash found on auth_user record for id:', user.id);
       return res.status(401).json({ success: false, message: 'Invalid credentials', reason: 'no-password-hash' });
     }
 
     // Use verifyPassword helper which supports bcrypt and Django PBKDF2
     const isValid = await verifyPassword(password, storedHash);
-    console.log('🔐 verifyPassword result =', isValid);
+    console.log('≡ƒöÉ verifyPassword result =', isValid);
     if (!isValid) {
-      console.log('❌ Password verification failed for auth_user id:', user.id);
+      console.log('Γ¥î Password verification failed for auth_user id:', user.id);
       return res.status(401).json({ success: false, message: 'Invalid credentials', reason: 'password-mismatch' });
     }
 
-    // Link mobile app user to verified auth_user — do not copy customer rows.
+    // Link mobile app user to verified auth_user ΓÇö do not copy customer rows.
     const linkAppUserId = await resolveLinkAppUserId(req);
     if (!linkAppUserId) {
       return res.status(401).json({
@@ -689,9 +606,9 @@ router.post('/verify-fetch-projects', authenticate, [
              SET created_at = CURRENT_TIMESTAMP`,
           [linkAppUserId, user.id, null]
         );
-        console.log(`✅ app_auth_links: app_user_id=${linkAppUserId} auth_user_id=${user.id}`);
+        console.log(`Γ£à app_auth_links: app_user_id=${linkAppUserId} auth_user_id=${user.id}`);
       } catch (linkErr) {
-        console.error('❌ verify-fetch-projects link upsert failed:', linkErr.message);
+        console.error('Γ¥î verify-fetch-projects link upsert failed:', linkErr.message);
         return res.status(500).json({
           success: false,
           message: 'Credentials verified but account could not be linked',
@@ -700,7 +617,7 @@ router.post('/verify-fetch-projects', authenticate, [
         });
       }
     } else {
-      console.log(`ℹ️ verify-fetch-projects: already linked app_user_id=${linkAppUserId} auth_user_id=${user.id}`);
+      console.log(`Γä╣∩╕Å verify-fetch-projects: already linked app_user_id=${linkAppUserId} auth_user_id=${user.id}`);
     }
 
     const projects = await buildProjectsForAuthUserId(user.id);
@@ -715,12 +632,12 @@ router.post('/verify-fetch-projects', authenticate, [
       data: { projects, linkedAuthUserId: user.id },
     });
   } catch (error) {
-    console.error('❌ verify-fetch-projects error:', error);
+    console.error('Γ¥î verify-fetch-projects error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Forgot Password — emails a 6-digit OTP (user_app or auth_user)
+// Forgot Password ΓÇö emails a 6-digit OTP (user_app or auth_user)
 router.post('/forgot-password', [
   body('email').isEmail().withMessage('Valid email is required'),
 ], async (req, res) => {
@@ -778,7 +695,7 @@ router.post('/forgot-password', [
   }
 });
 
-// Reset Password — email + OTP (preferred) or legacy JWT token
+// Reset Password ΓÇö email + OTP (preferred) or legacy JWT token
 router.post('/reset-password', [
   body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
 ], async (req, res) => {
@@ -881,7 +798,7 @@ router.put('/profile', authenticate, async (req, res) => {
       });
     }
 
-    // auth_user session (Django login — most production users)
+    // auth_user session (Django login ΓÇö most production users)
     const authId =
       user.auth_source === 'auth_user' && user.id != null
         ? parseInt(user.id, 10)
@@ -923,7 +840,7 @@ router.put('/profile', authenticate, async (req, res) => {
       });
     }
 
-    // No user_profile row — update auth_user name fields when possible
+    // No user_profile row ΓÇö update auth_user name fields when possible
     const colRes = await pool.query(`
       SELECT column_name FROM information_schema.columns
       WHERE table_schema = 'public' AND table_name = 'auth_user'
