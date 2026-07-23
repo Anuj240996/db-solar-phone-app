@@ -323,12 +323,29 @@ async function findAuthUserByLogin(username) {
   if (cols.includes('email')) selectFields.push('email');
   if (cols.includes('first_name')) selectFields.push('first_name');
   if (cols.includes('last_name')) selectFields.push('last_name');
+  if (cols.includes('is_staff')) selectFields.push('is_staff');
   if (cols.includes('password_hash')) selectFields.push('password_hash');
   else if (cols.includes('password')) selectFields.push('password as password_hash');
 
   const q = `SELECT ${selectFields.join(', ')} FROM auth_user ${whereClause} LIMIT 1`;
   const result = await pool.query(q, [username.trim()]);
   return result.rows[0] || null;
+}
+
+function bitFlagTrue(value) {
+  if (value === true || value === 1) return true;
+  const s = String(value ?? '').trim().toLowerCase();
+  return s === 'true' || s === '1' || s === 't' || s === 'yes';
+}
+
+/** Staff / associate accounts in auth_user (is_staff). Consumers are DB_* / non-staff. */
+function isAssociateAuthUser(authUser) {
+  if (!authUser) return false;
+  const username = String(authUser.username || '').trim().toLowerCase();
+  if (username.startsWith('aso_')) return true;
+  if (username.startsWith('db_')) return false;
+  if (bitFlagTrue(authUser.is_staff)) return true;
+  return false;
 }
 
 function buildLoginResponse(token, user) {
@@ -339,7 +356,39 @@ function buildLoginResponse(token, user) {
   };
 }
 
-// App Login: user_app first, then auth_user (legacy/Django accounts)
+function issueAssociateAuthUserToken(authUser, loginId) {
+  const displayName =
+    [authUser.first_name, authUser.last_name].filter(Boolean).join(' ').trim() ||
+    authUser.username ||
+    authUser.email ||
+    loginId ||
+    'Associate';
+
+  const token = jwt.sign(
+    {
+      userId: String(authUser.id),
+      email: authUser.email || loginId,
+      source: 'auth_user',
+      role: 'associate',
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+  );
+
+  return buildLoginResponse(token, {
+    id: authUser.id,
+    name: displayName,
+    email: authUser.email || loginId,
+    phone: '',
+    role: 'associate',
+    address: '',
+    username: authUser.username || null,
+  });
+}
+
+// App Login:
+// - Associate → auth_user staff only (username/password from auth_user)
+// - Consumer → user_app / non-staff auth_user (previous logic unchanged)
 router.post('/login', [
   body('username').trim().notEmpty().withMessage('Username is required'),
   body('password').notEmpty().withMessage('Password is required'),
@@ -362,7 +411,29 @@ router.post('/login', [
     const loginId = String(username).trim();
     console.log('🔵 App login attempt for:', loginId);
 
-    // 1) user_app (app signup / bcrypt password_hash)
+    // ASSOCIATE: verify ONLY against auth_user staff accounts
+    try {
+      const staffCandidate = await findAuthUserByLogin(loginId);
+      if (staffCandidate && isAssociateAuthUser(staffCandidate)) {
+        const storedHash =
+          staffCandidate.password_hash ||
+          staffCandidate.password ||
+          staffCandidate.passwordHash;
+        if (!storedHash) {
+          return res.status(401).json({ success: false, message: 'Invalid credentials' });
+        }
+        const authValid = await verifyPassword(password, storedHash);
+        if (!authValid) {
+          return res.status(401).json({ success: false, message: 'Invalid credentials' });
+        }
+        console.log('✅ Associate login via auth_user id=', staffCandidate.id, staffCandidate.username);
+        return res.json(issueAssociateAuthUserToken(staffCandidate, loginId));
+      }
+    } catch (asoErr) {
+      console.error('Associate auth_user login check failed:', asoErr.message);
+    }
+
+    // CONSUMER: user_app first (unchanged for normal customers)
     try {
       const uaQuery = await pool.query(
         `SELECT id, name, email, phone, password_hash, role, address, created_at, last_login
@@ -374,6 +445,22 @@ router.post('/login', [
 
       if (uaQuery.rows.length > 0) {
         const uaUser = uaQuery.rows[0];
+        const nameLower = String(uaUser.name || '').trim().toLowerCase();
+        const roleLower = String(uaUser.role || '').trim().toLowerCase();
+        const isAsoUa =
+          roleLower === 'associate' ||
+          roleLower === 'aso' ||
+          nameLower.startsWith('aso_') ||
+          String(uaUser.email || '').trim().toLowerCase().startsWith('aso_');
+
+        if (isAsoUa) {
+          return res.status(401).json({
+            success: false,
+            message:
+              'Associate login uses staff username from auth_user (example: Nilesh_28), not this app email.',
+          });
+        }
+
         let valid = false;
         if (uaUser.password_hash) {
           try {
@@ -399,21 +486,10 @@ router.post('/login', [
         }
 
         const token = jwt.sign(
-          { userId: String(uaUser.id), email: uaUser.email, source: 'user_app' },
+          { userId: String(uaUser.id), email: uaUser.email, source: 'user_app', role: 'customer' },
           process.env.JWT_SECRET,
           { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
         );
-
-        let role = uaUser.role || 'customer';
-        const nameLower = String(uaUser.name || '').trim().toLowerCase();
-        const emailLower = String(uaUser.email || '').trim().toLowerCase();
-        if (
-          role === 'associate' ||
-          nameLower.startsWith('aso_') ||
-          emailLower.startsWith('aso_')
-        ) {
-          role = 'associate';
-        }
 
         return res.json(
           buildLoginResponse(token, {
@@ -421,7 +497,7 @@ router.post('/login', [
             name: uaUser.name,
             email: uaUser.email,
             phone: uaUser.phone,
-            role,
+            role: 'customer',
             address: uaUser.address,
             createdAt: uaUser.created_at,
           })
@@ -435,10 +511,23 @@ router.post('/login', [
       }
     }
 
-    // 2) auth_user (Django / staff accounts — e.g. anuj@gmail.com may exist only here)
+    // Consumer auth_user (e.g. DB_*) — non-staff only
     const authUser = await findAuthUserByLogin(loginId);
     if (!authUser) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    }
+
+    if (isAssociateAuthUser(authUser)) {
+      const storedHashA =
+        authUser.password_hash || authUser.password || authUser.passwordHash;
+      if (!storedHashA) {
+        return res.status(401).json({ success: false, message: 'Invalid credentials' });
+      }
+      const okA = await verifyPassword(password, storedHashA);
+      if (!okA) {
+        return res.status(401).json({ success: false, message: 'Invalid credentials' });
+      }
+      return res.json(issueAssociateAuthUserToken(authUser, loginId));
     }
 
     const storedHash =
@@ -458,19 +547,12 @@ router.post('/login', [
       authUser.email ||
       'User';
 
-    const loginLower = String(loginId || '').trim().toLowerCase();
-    const usernameLower = String(authUser.username || '').trim().toLowerCase();
-    const authRole =
-      loginLower.startsWith('aso_') || usernameLower.startsWith('aso_')
-        ? 'associate'
-        : 'customer';
-
     const token = jwt.sign(
       {
         userId: String(authUser.id),
         email: authUser.email || loginId,
         source: 'auth_user',
-        role: authRole,
+        role: 'customer',
       },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
@@ -482,7 +564,7 @@ router.post('/login', [
         name: displayName,
         email: authUser.email || loginId,
         phone: '',
-        role: authRole,
+        role: 'customer',
         address: '',
       })
     );
@@ -496,6 +578,7 @@ router.post('/login', [
     });
   }
 });
+
 
 // Verify credentials against auth_user table and fetch that user's projects (customers)
 router.post('/verify-fetch-projects', authenticate, [

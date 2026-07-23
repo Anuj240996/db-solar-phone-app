@@ -19,6 +19,13 @@ const authenticate = async (req, res, next) => {
       user.jwt_source = jwtSource;
       user.jwt_user_id = jwtUserId;
       if (decoded.email) user.jwt_email = decoded.email;
+      if (decoded.role) {
+        user.jwt_role = decoded.role;
+        // Prefer JWT role for associate staff sessions
+        if (!user.role || String(decoded.role).toLowerCase() === 'associate') {
+          user.role = decoded.role;
+        }
+      }
       return user;
     };
 
@@ -139,6 +146,9 @@ const authenticate = async (req, res, next) => {
     } else {
       lastLoginField = 'NULL as last_login';
     }
+
+    let staffField = availableColumns.includes('is_staff') ? 'is_staff' : 'NULL as is_staff';
+    let usernameField = availableColumns.includes('username') ? 'username' : 'NULL as username';
     
     let result = { rows: [] };
     
@@ -153,7 +163,9 @@ const authenticate = async (req, res, next) => {
           ${roleField},
           ${addressField},
           ${createdAtField},
-          ${lastLoginField}
+          ${lastLoginField},
+          ${staffField},
+          ${usernameField}
         FROM auth_user 
         WHERE id = $1
       `;
@@ -208,6 +220,18 @@ const authenticate = async (req, res, next) => {
     const authUser = result.rows[0];
     // mark source for downstream handlers
     authUser.auth_source = 'auth_user';
+    // Associate staff sessions: honor JWT role or is_staff flag (do not treat as consumer)
+    if (decoded.role) {
+      authUser.role = decoded.role;
+    } else if (
+      authUser.is_staff === true ||
+      String(authUser.is_staff).toLowerCase() === 'true' ||
+      String(authUser.is_staff) === '1'
+    ) {
+      authUser.role = 'associate';
+    } else if (!authUser.role) {
+      authUser.role = 'customer';
+    }
     console.log('✅ User authenticated:', authUser.email || authUser.name);
     console.log('   User ID type:', typeof authUser.id, 'Value:', authUser.id);
     
