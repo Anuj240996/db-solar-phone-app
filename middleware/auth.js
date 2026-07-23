@@ -19,6 +19,12 @@ const authenticate = async (req, res, next) => {
       user.jwt_source = jwtSource;
       user.jwt_user_id = jwtUserId;
       if (decoded.email) user.jwt_email = decoded.email;
+      if (decoded.role) {
+        user.jwt_role = decoded.role;
+        if (!user.role || String(decoded.role).toLowerCase() === 'associate') {
+          user.role = decoded.role;
+        }
+      }
       return user;
     };
 

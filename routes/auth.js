@@ -323,6 +323,7 @@ async function findAuthUserByLogin(username) {
   if (cols.includes('email')) selectFields.push('email');
   if (cols.includes('first_name')) selectFields.push('first_name');
   if (cols.includes('last_name')) selectFields.push('last_name');
+  if (cols.includes('is_staff')) selectFields.push('is_staff');
   if (cols.includes('password_hash')) selectFields.push('password_hash');
   else if (cols.includes('password')) selectFields.push('password as password_hash');
 
@@ -338,6 +339,102 @@ function buildLoginResponse(token, user) {
     data: { token, user },
   };
 }
+
+function bitFlagTrue(value) {
+  if (value === true || value === 1) return true;
+  const s = String(value ?? '').trim().toLowerCase();
+  return s === 'true' || s === '1' || s === 't' || s === 'yes';
+}
+
+function isStaffAuthUser(authUser) {
+  if (!authUser) return false;
+  const username = String(authUser.username || '').trim().toLowerCase();
+  if (username.startsWith('db_')) return false;
+  if (username.startsWith('aso_')) return true;
+  return bitFlagTrue(authUser.is_staff);
+}
+
+/**
+ * Associate-only login: verify username/password against auth_user (staff).
+ * Does not change consumer POST /login.
+ */
+router.post('/associate-login', [
+  body('username').trim().notEmpty().withMessage('Username is required'),
+  body('password').notEmpty().withMessage('Password is required'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+    }
+    if (!process.env.JWT_SECRET) {
+      return res.status(500).json({
+        success: false,
+        message: 'Server misconfiguration: JWT_SECRET is missing.',
+      });
+    }
+
+    const loginId = String(req.body.username || '').trim();
+    const password = req.body.password;
+    console.log('🔵 Associate login attempt for:', loginId);
+
+    const authUser = await findAuthUserByLogin(loginId);
+    if (!authUser || !isStaffAuthUser(authUser)) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid associate credentials. Use your staff username from auth_user.',
+      });
+    }
+
+    const storedHash =
+      authUser.password_hash || authUser.password || authUser.passwordHash;
+    if (!storedHash) {
+      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    }
+
+    const valid = await verifyPassword(password, storedHash);
+    if (!valid) {
+      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    }
+
+    const displayName =
+      [authUser.first_name, authUser.last_name].filter(Boolean).join(' ').trim() ||
+      authUser.username ||
+      authUser.email ||
+      loginId;
+
+    const token = jwt.sign(
+      {
+        userId: String(authUser.id),
+        email: authUser.email || loginId,
+        source: 'auth_user',
+        role: 'associate',
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    );
+
+    console.log('✅ Associate login ok auth_user id=', authUser.id, authUser.username);
+    return res.json(
+      buildLoginResponse(token, {
+        id: authUser.id,
+        name: displayName,
+        email: authUser.email || loginId,
+        phone: '',
+        role: 'associate',
+        address: '',
+        username: authUser.username || null,
+      })
+    );
+  } catch (error) {
+    console.error('❌ Associate login error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message,
+    });
+  }
+});
 
 // App Login: user_app first, then auth_user (legacy/Django accounts)
 router.post('/login', [

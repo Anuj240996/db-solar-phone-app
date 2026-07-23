@@ -21,9 +21,44 @@ function associateDisplayName(name) {
   return n;
 }
 
-async function resolveAssociateContext(appUser) {
+async function resolveAssociateContext(reqUser) {
   await ensureAssociateAuthUserColumn();
-  const appUserId = parseInt(appUser.id ?? appUser.userId, 10);
+
+  const source = String(reqUser.auth_source || reqUser.jwt_source || '').toLowerCase();
+  const rawAuthId = reqUser.auth_user_id ?? (source === 'auth_user' ? (reqUser.id ?? reqUser.userId ?? reqUser.jwt_user_id) : null);
+  const authParsed = parseInt(rawAuthId, 10);
+
+  // Associate staff session from /auth/associate-login
+  if (source === 'auth_user' && !Number.isNaN(authParsed)) {
+    const au = await pool.query(
+      `SELECT id, username, first_name, last_name, email
+       FROM auth_user WHERE id = $1 LIMIT 1`,
+      [authParsed]
+    );
+    const row = au.rows[0];
+    if (!row) throw new Error('Associate auth_user not found');
+    const displayName =
+      [row.first_name, row.last_name].filter(Boolean).join(' ').trim() ||
+      row.username ||
+      'Associate';
+    const linkedApp = await pool.query(
+      `SELECT id FROM user_app WHERE auth_user_id = $1 ORDER BY id LIMIT 1`,
+      [authParsed]
+    );
+    const appUserId =
+      linkedApp.rows[0]?.id != null ? parseInt(linkedApp.rows[0].id, 10) : null;
+    return {
+      appUserId: appUserId && !Number.isNaN(appUserId) ? appUserId : null,
+      name: displayName,
+      displayName,
+      email: row.email,
+      phone: null,
+      authUserIds: [authParsed],
+      authSource: 'auth_user',
+    };
+  }
+
+  const appUserId = parseInt(reqUser.id ?? reqUser.userId, 10);
   if (!appUserId || Number.isNaN(appUserId)) {
     throw new Error('Invalid associate user');
   }

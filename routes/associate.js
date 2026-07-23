@@ -25,14 +25,16 @@ const STAGE_META = [
 ];
 
 function requireAssociate(req, res, next) {
-  const role = String(req.user?.role || '').toLowerCase();
+  const role = String(req.user?.role || req.user?.jwt_role || '').toLowerCase();
   const name = String(req.user?.name || req.user?.username || '').toLowerCase();
+  const source = String(req.user?.auth_source || req.user?.jwt_source || '').toLowerCase();
   const isAso =
     role === 'associate' ||
     role === 'aso' ||
     role === 'employee' ||
     role === 'staff' ||
-    name.startsWith('aso_');
+    name.startsWith('aso_') ||
+    (source === 'auth_user' && role === 'associate');
   if (!isAso) {
     return res.status(403).json({ message: 'Associate access only' });
   }
@@ -51,40 +53,42 @@ async function loadAssociateRecords(ctx) {
     items.push(row);
   };
 
-  // 1) App leads created by this associate
-  const appLeads = await pool.query(
-    `SELECT id, name, phone, email, city, state, address, stage, status,
-            property_type, roof_type, electricity_bill, next_followup, created_at,
-            estimated_value, user_app_id
-     FROM leads_lead
-     WHERE user_app_id = $1
-     ORDER BY created_at DESC NULLS LAST
-     LIMIT 500`,
-    [appUserId]
-  );
-  for (const r of appLeads.rows) {
-    push({
-      id: String(r.id),
-      source: 'app_lead',
-      name: r.name,
-      customer: r.name,
-      phone: r.phone,
-      email: r.email,
-      city: r.city,
-      location: [r.city, r.state].filter(Boolean).join(', ') || r.address || '',
-      capacity: null,
-      capacityKwp: 0,
-      stage: mapCrmStageToPipeline(r.stage || r.status),
-      status: r.status || r.stage,
-      progress: progressForStage(mapCrmStageToPipeline(r.stage || r.status)),
-      nextAction: r.next_followup ? 'Follow up' : 'Qualify lead',
-      followUp: r.next_followup,
-      createdAt: r.created_at,
-      estimatedValue: Number(r.estimated_value || 0),
-      propertyType: r.property_type,
-      roof: r.roof_type,
-      bill: r.electricity_bill,
-    });
+  // 1) App leads created by linked user_app (optional)
+  if (appUserId) {
+    const appLeads = await pool.query(
+      `SELECT id, name, phone, email, city, state, address, stage, status,
+              property_type, roof_type, electricity_bill, next_followup, created_at,
+              estimated_value, user_app_id
+       FROM leads_lead
+       WHERE user_app_id = $1
+       ORDER BY created_at DESC NULLS LAST
+       LIMIT 500`,
+      [appUserId]
+    );
+    for (const r of appLeads.rows) {
+      push({
+        id: String(r.id),
+        source: 'app_lead',
+        name: r.name,
+        customer: r.name,
+        phone: r.phone,
+        email: r.email,
+        city: r.city,
+        location: [r.city, r.state].filter(Boolean).join(', ') || r.address || '',
+        capacity: null,
+        capacityKwp: 0,
+        stage: mapCrmStageToPipeline(r.stage || r.status),
+        status: r.status || r.stage,
+        progress: progressForStage(mapCrmStageToPipeline(r.stage || r.status)),
+        nextAction: r.next_followup ? 'Follow up' : 'Qualify lead',
+        followUp: r.next_followup,
+        createdAt: r.created_at,
+        estimatedValue: Number(r.estimated_value || 0),
+        propertyType: r.property_type,
+        roof: r.roof_type,
+        bill: r.electricity_bill,
+      });
+    }
   }
 
   // 2) CRM leads assigned to linked staff user(s)
