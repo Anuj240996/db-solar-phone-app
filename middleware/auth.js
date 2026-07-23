@@ -145,6 +145,9 @@ const authenticate = async (req, res, next) => {
     } else {
       lastLoginField = 'NULL as last_login';
     }
+
+    const staffField = availableColumns.includes('is_staff') ? 'is_staff' : 'NULL as is_staff';
+    const usernameField = availableColumns.includes('username') ? 'username' : 'NULL as username';
     
     let result = { rows: [] };
     
@@ -159,18 +162,20 @@ const authenticate = async (req, res, next) => {
           ${roleField},
           ${addressField},
           ${createdAtField},
-          ${lastLoginField}
+          ${lastLoginField},
+          ${staffField},
+          ${usernameField}
         FROM auth_user 
         WHERE id = $1
       `;
       
-      console.log('≡ƒô¥ Querying auth_user with dynamic columns');
+      console.log('📝 Querying auth_user with dynamic columns');
       console.log('   Query:', selectQuery);
       
       try {
         result = await pool.query(selectQuery, [decoded.userId]);
       } catch (queryError) {
-        console.error('Γ¥î Error querying auth_user:', queryError.message);
+        console.error('❌ Error querying auth_user:', queryError.message);
         console.error('   Query was:', selectQuery);
         // Continue to try users table
         result = { rows: [] };
@@ -214,7 +219,19 @@ const authenticate = async (req, res, next) => {
     const authUser = result.rows[0];
     // mark source for downstream handlers
     authUser.auth_source = 'auth_user';
-    console.log('Γ£à User authenticated:', authUser.email || authUser.name);
+    // Associate staff tokens must keep role=associate (auth_user has no role column)
+    if (decoded.role) {
+      authUser.role = decoded.role;
+    } else if (
+      authUser.is_staff === true ||
+      String(authUser.is_staff).toLowerCase() === 'true' ||
+      String(authUser.is_staff) === '1'
+    ) {
+      authUser.role = 'associate';
+    } else if (!authUser.role) {
+      authUser.role = 'customer';
+    }
+    console.log('✅ User authenticated:', authUser.email || authUser.name, 'role=', authUser.role);
     console.log('   User ID type:', typeof authUser.id, 'Value:', authUser.id);
     
     // Check if ID is an integer (not a UUID)
@@ -234,23 +251,26 @@ const authenticate = async (req, res, next) => {
           
           if (usersTableResult.rows.length > 0) {
             const usersTableUser = usersTableResult.rows[0];
-            console.log('   Γ£à Found UUID in users table:', usersTableUser.id);
-            // Use UUID from users table, but keep auth_user data for other fields
-            req.user = {
+            console.log('   ✅ Found UUID in users table:', usersTableUser.id);
+            // Keep auth_user id for associate scoping; honor JWT associate role
+            req.user = attachJwtMeta({
               ...usersTableUser,
+              role: decoded.role || authUser.role || usersTableUser.role || 'customer',
               auth_user_id: authUser.id,
+              username: authUser.username || usersTableUser.name,
+              is_staff: authUser.is_staff,
               auth_source: 'auth_user',
-            };
+            });
             next();
             return;
           } else {
-            console.log('   ΓÜá∩╕Å No matching user found in users table by email:', authUser.email);
+            console.log('   ⚠️ No matching user found in users table by email:', authUser.email);
           }
         }
         
         // If not found by email, we need to handle this case
         // For now, we'll use the auth_user data but this will cause UUID errors
-        console.log('   ΓÜá∩╕Å Warning: Using integer ID which may cause UUID errors in other queries');
+        console.log('   ⚠️ Warning: Using integer ID which may cause UUID errors in other queries');
         req.user = attachJwtMeta({
           ...authUser,
           id: authUser.id.toString(),
@@ -258,7 +278,7 @@ const authenticate = async (req, res, next) => {
           auth_source: 'auth_user',
         });
       } catch (uuidLookupError) {
-        console.error('   Γ¥î Error looking up UUID:', uuidLookupError.message);
+        console.error('   ❌ Error looking up UUID:', uuidLookupError.message);
         req.user = attachJwtMeta({ ...authUser, auth_source: 'auth_user' });
       }
     } else {

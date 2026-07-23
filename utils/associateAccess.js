@@ -25,11 +25,15 @@ async function resolveAssociateContext(reqUser) {
   await ensureAssociateAuthUserColumn();
 
   const source = String(reqUser.auth_source || reqUser.jwt_source || '').toLowerCase();
-  const rawAuthId = reqUser.auth_user_id ?? (source === 'auth_user' ? (reqUser.id ?? reqUser.userId ?? reqUser.jwt_user_id) : null);
+  // Prefer real auth_user id (not UUID from users table)
+  const rawAuthId =
+    reqUser.auth_user_id ??
+    reqUser.jwt_user_id ??
+    (source === 'auth_user' ? (reqUser.id ?? reqUser.userId) : null);
   const authParsed = parseInt(rawAuthId, 10);
 
   // Associate staff session from /auth/associate-login
-  if (source === 'auth_user' && !Number.isNaN(authParsed)) {
+  if ((source === 'auth_user' || reqUser.auth_user_id != null) && !Number.isNaN(authParsed)) {
     const au = await pool.query(
       `SELECT id, username, first_name, last_name, email
        FROM auth_user WHERE id = $1 LIMIT 1`,
