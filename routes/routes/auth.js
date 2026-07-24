@@ -356,7 +356,9 @@ function isStaffAuthUser(authUser) {
 
 /**
  * Associate-only login: verify username/password against auth_user (staff).
- * Does not change consumer POST /login.
+ * Completely separate from:
+ * - Consumer mobile POST /auth/login (user_app first)
+ * - Web app db-solar-v2 Django login (untouched service)
  */
 router.post('/associate-login', [
   body('username').trim().notEmpty().withMessage('Username is required'),

@@ -224,17 +224,15 @@ const authenticate = async (req, res, next) => {
     const authUser = result.rows[0];
     // mark source for downstream handlers
     authUser.auth_source = 'auth_user';
-    // Associate staff tokens must keep role=associate (auth_user has no role column)
-    if (decoded.role) {
-      authUser.role = decoded.role;
-    } else if (
-      authUser.is_staff === true ||
-      String(authUser.is_staff).toLowerCase() === 'true' ||
-      String(authUser.is_staff) === '1'
-    ) {
+    // Do NOT promote staff auth_user → associate unless JWT is from /auth/associate-login
+    // (keeps consumer phone-app + web Django auth_user sessions unchanged)
+    if (isAssociateToken) {
       authUser.role = 'associate';
-    } else if (!authUser.role) {
-      authUser.role = 'customer';
+    } else if (decoded.role && String(decoded.role).toLowerCase() !== 'associate') {
+      authUser.role = decoded.role;
+    } else if (!authUser.role || authUser.role === 'customer') {
+      // auth_user has no real role column in many installs — default customer for /login
+      authUser.role = authUser.role || 'customer';
     }
     console.log('✅ User authenticated:', authUser.email || authUser.name, 'role=', authUser.role);
     console.log('   User ID type:', typeof authUser.id, 'Value:', authUser.id);
@@ -257,15 +255,23 @@ const authenticate = async (req, res, next) => {
           if (usersTableResult.rows.length > 0) {
             const usersTableUser = usersTableResult.rows[0];
             console.log('   ✅ Found UUID in users table:', usersTableUser.id);
-            // Keep auth_user id for associate scoping; honor JWT associate role
-            req.user = attachJwtMeta({
-              ...usersTableUser,
-              role: decoded.role || authUser.role || usersTableUser.role || 'customer',
-              auth_user_id: authUser.id,
-              username: authUser.username || usersTableUser.name,
-              is_staff: authUser.is_staff,
-              auth_source: 'auth_user',
-            });
+            if (isAssociateToken) {
+              // Associate session: keep JWT role + real auth_user id for scoping
+              req.user = attachJwtMeta({
+                ...usersTableUser,
+                role: 'associate',
+                auth_user_id: authUser.id,
+                username: authUser.username || usersTableUser.name,
+                is_staff: authUser.is_staff,
+                auth_source: 'auth_user',
+              });
+            } else {
+              // Consumer / legacy auth_user: previous behaviour — users row role unchanged
+              req.user = attachJwtMeta({
+                ...usersTableUser,
+                auth_source: 'auth_user',
+              });
+            }
             next();
             return;
           } else {
@@ -279,7 +285,7 @@ const authenticate = async (req, res, next) => {
         req.user = attachJwtMeta({
           ...authUser,
           id: authUser.id.toString(),
-          auth_user_id: authUser.id,
+          ...(isAssociateToken ? { auth_user_id: authUser.id } : {}),
           auth_source: 'auth_user',
         });
       } catch (uuidLookupError) {

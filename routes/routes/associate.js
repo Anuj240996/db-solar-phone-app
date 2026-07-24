@@ -27,24 +27,16 @@ const STAGE_META = [
 function requireAssociate(req, res, next) {
   const role = String(req.user?.role || req.user?.jwt_role || '').toLowerCase();
   const name = String(req.user?.name || req.user?.username || '').toLowerCase();
-  const source = String(req.user?.auth_source || req.user?.jwt_source || '').toLowerCase();
-  const staff =
-    req.user?.is_staff === true ||
-    String(req.user?.is_staff || '').toLowerCase() === 'true' ||
-    String(req.user?.is_staff || '') === '1';
+  // Only dedicated Associate Login sessions (JWT role=associate) or aso_* names
   const isAso =
     role === 'associate' ||
     role === 'aso' ||
-    role === 'employee' ||
-    role === 'staff' ||
-    name.startsWith('aso_') ||
-    (source === 'auth_user' && (role === 'associate' || staff || req.user?.auth_user_id != null));
+    name.startsWith('aso_');
   if (!isAso) {
     return res.status(403).json({
       message: 'Associate access only',
       role: req.user?.role,
       jwt_role: req.user?.jwt_role,
-      source,
     });
   }
   return next();
