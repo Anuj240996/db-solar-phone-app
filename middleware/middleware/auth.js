@@ -12,8 +12,10 @@ const authenticate = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const jwtSource = decoded.source || null;
     const jwtUserId = decoded.userId != null ? String(decoded.userId) : null;
+    // Only Associate Login tokens carry role=associate — never rewrite consumer/web sessions
+    const isAssociateToken = String(decoded.role || '').toLowerCase() === 'associate';
 
-    console.log('≡ƒöÉ Authenticating request for userId:', jwtUserId, 'source:', jwtSource || 'unknown');
+    console.log('🔐 Authenticating request for userId:', jwtUserId, 'source:', jwtSource || 'unknown');
 
     const attachJwtMeta = (user) => {
       user.jwt_source = jwtSource;
@@ -21,7 +23,10 @@ const authenticate = async (req, res, next) => {
       if (decoded.email) user.jwt_email = decoded.email;
       if (decoded.role) {
         user.jwt_role = decoded.role;
-        if (!user.role || String(decoded.role).toLowerCase() === 'associate') {
+        // Apply associate role only for dedicated associate-login JWTs
+        if (isAssociateToken) {
+          user.role = 'associate';
+        } else if (!user.role) {
           user.role = decoded.role;
         }
       }
