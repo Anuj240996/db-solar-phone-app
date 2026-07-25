@@ -57,7 +57,7 @@ app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/stats', require('./routes/stats'));
 
 // Health check — apiVersion confirms phone-app has project-link + QR routes deployed
-const API_VERSION = '1.4.9';
+const API_VERSION = '1.4.10';
 const BUILD_STAMP = process.env.BUILD_STAMP || 'local';
 
 async function runStartupMigrations() {
@@ -109,6 +109,14 @@ app.get('/api/health', async (req, res) => {
     apiVersion: API_VERSION,
     buildStamp: BUILD_STAMP,
     database,
+    architecture: {
+      mode: 'shared_db_bff',
+      note:
+        'Phone BFF shares db_solar_v2 with Django. Use DATABASE_URL host=database. ' +
+        'Next: proxy reads/writes via Django HTTP APIs (Option A).',
+      djangoBaseUrl: process.env.DJANGO_BASE_URL || null,
+      webHealth: 'https://app.db-solar.co.in/health/',
+    },
       features: {
       importFromQr: true,
       verifyFetchProjects: true,
