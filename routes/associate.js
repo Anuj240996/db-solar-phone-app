@@ -358,6 +358,31 @@ function buildActivities(items) {
 
 router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
   try {
+    // Option A: proxy to Django when configured
+    try {
+      const { djangoEnabled, associateGet } = require('../utils/djangoClient');
+      if (djangoEnabled()) {
+        const authUserId =
+          req.user?.auth_user_id ??
+          req.user?.jwt_user_id ??
+          (String(req.user?.auth_source || req.user?.jwt_source || '').toLowerCase() === 'auth_user'
+            ? req.user?.id ?? req.user?.userId
+            : null);
+        if (authUserId != null) {
+          const djangoRes = await associateGet(
+            '/api/v1/associate/dashboard/',
+            authUserId
+          );
+          if (djangoRes.status >= 200 && djangoRes.status < 300) {
+            return res.status(djangoRes.status).json(djangoRes.data);
+          }
+          console.warn('Django associate dashboard status', djangoRes.status, djangoRes.data);
+        }
+      }
+    } catch (djangoErr) {
+      console.warn('Django associate dashboard failed, falling back:', djangoErr.message);
+    }
+
     await ensureAssociateAuthUserColumn();
     const ctx = await resolveAssociateContext(req.user);
     const items = await loadAssociateRecords(ctx);
@@ -371,8 +396,8 @@ router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
       .map((i) => ({
         name: i.name,
         customer: i.customer,
-        capacity: i.capacity || 'ΓÇö',
-        location: i.location || i.city || 'ΓÇö',
+        capacity: i.capacity || '—',
+        location: i.location || i.city || '—',
         type: i.type || '',
         stage: i.stage,
         progress: i.progress,
@@ -409,8 +434,8 @@ router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
           : items.slice(0, 5).map((i) => ({
               name: i.name,
               customer: i.customer,
-              capacity: i.capacity || 'ΓÇö',
-              location: i.location || 'ΓÇö',
+              capacity: i.capacity || '—',
+              location: i.location || '—',
               type: i.type || '',
               stage: i.stage,
               progress: i.progress,
@@ -441,6 +466,30 @@ router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
 
 router.get('/projects', authenticate, requireAssociate, async (req, res) => {
   try {
+    try {
+      const { djangoEnabled, associateGet } = require('../utils/djangoClient');
+      if (djangoEnabled()) {
+        const authUserId =
+          req.user?.auth_user_id ??
+          req.user?.jwt_user_id ??
+          (String(req.user?.auth_source || req.user?.jwt_source || '').toLowerCase() === 'auth_user'
+            ? req.user?.id ?? req.user?.userId
+            : null);
+        if (authUserId != null) {
+          const djangoRes = await associateGet('/api/v1/associate/projects/', authUserId, {
+            stage: req.query.stage || 'All',
+            q: req.query.q || '',
+          });
+          if (djangoRes.status >= 200 && djangoRes.status < 300) {
+            return res.status(djangoRes.status).json(djangoRes.data);
+          }
+          console.warn('Django associate projects status', djangoRes.status, djangoRes.data);
+        }
+      }
+    } catch (djangoErr) {
+      console.warn('Django associate projects failed, falling back:', djangoErr.message);
+    }
+
     const ctx = await resolveAssociateContext(req.user);
     const stage = String(req.query.stage || 'All').trim();
     const q = String(req.query.q || '').trim().toLowerCase();
@@ -470,6 +519,27 @@ router.get('/projects', authenticate, requireAssociate, async (req, res) => {
 
 router.get('/tasks', authenticate, requireAssociate, async (req, res) => {
   try {
+    try {
+      const { djangoEnabled, associateGet } = require('../utils/djangoClient');
+      if (djangoEnabled()) {
+        const authUserId =
+          req.user?.auth_user_id ??
+          req.user?.jwt_user_id ??
+          (String(req.user?.auth_source || req.user?.jwt_source || '').toLowerCase() === 'auth_user'
+            ? req.user?.id ?? req.user?.userId
+            : null);
+        if (authUserId != null) {
+          const djangoRes = await associateGet('/api/v1/associate/tasks/', authUserId);
+          if (djangoRes.status >= 200 && djangoRes.status < 300) {
+            return res.status(djangoRes.status).json(djangoRes.data);
+          }
+          console.warn('Django associate tasks status', djangoRes.status, djangoRes.data);
+        }
+      }
+    } catch (djangoErr) {
+      console.warn('Django associate tasks failed, falling back:', djangoErr.message);
+    }
+
     const ctx = await resolveAssociateContext(req.user);
     const items = await loadAssociateRecords(ctx);
     const tasks = buildTasks(items);

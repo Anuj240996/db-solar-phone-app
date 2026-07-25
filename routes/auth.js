@@ -357,6 +357,7 @@ function isStaffAuthUser(authUser) {
 /**
  * Associate-only login: verify username/password against auth_user (staff).
  * Does not change consumer POST /login.
+ * Option A: when DJANGO_BASE_URL is set, validate via Django then re-issue phone JWT.
  */
 router.post('/associate-login', [
   body('username').trim().notEmpty().withMessage('Username is required'),
@@ -378,23 +379,64 @@ router.post('/associate-login', [
     const password = req.body.password;
     console.log('🔵 Associate login attempt for:', loginId);
 
-    const authUser = await findAuthUserByLogin(loginId);
-    if (!authUser || !isStaffAuthUser(authUser)) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid associate credentials. Use your staff username from auth_user.',
-      });
+    let authUser = null;
+
+    // Option A path: Django validates credentials
+    try {
+      const { djangoEnabled, associateLogin } = require('../utils/djangoClient');
+      if (djangoEnabled()) {
+        const djangoRes = await associateLogin(loginId, password);
+        if (djangoRes.status === 200 && djangoRes.data?.success && djangoRes.data?.data?.user) {
+          const u = djangoRes.data.data.user;
+          authUser = {
+            id: u.id,
+            username: u.username,
+            email: u.email,
+            first_name: String(u.name || '').split(' ')[0] || '',
+            last_name: String(u.name || '').split(' ').slice(1).join(' ') || '',
+            is_staff: true,
+          };
+          console.log('✅ Associate login via Django auth_user id=', authUser.id, authUser.username);
+        } else if (djangoRes.status === 401) {
+          return res.status(401).json({
+            success: false,
+            message:
+              djangoRes.data?.message ||
+              'Invalid associate credentials. Use your staff username from auth_user.',
+          });
+        } else {
+          console.warn(
+            'Django associate-login unexpected status',
+            djangoRes.status,
+            djangoRes.data
+          );
+        }
+      }
+    } catch (djangoErr) {
+      console.warn('Django associate-login failed, falling back to local DB:', djangoErr.message);
     }
 
-    const storedHash =
-      authUser.password_hash || authUser.password || authUser.passwordHash;
-    if (!storedHash) {
-      return res.status(401).json({ success: false, message: 'Invalid credentials' });
-    }
+    // Legacy / fallback: direct auth_user check
+    if (!authUser) {
+      authUser = await findAuthUserByLogin(loginId);
+      if (!authUser || !isStaffAuthUser(authUser)) {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid associate credentials. Use your staff username from auth_user.',
+        });
+      }
 
-    const valid = await verifyPassword(password, storedHash);
-    if (!valid) {
-      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+      const storedHash =
+        authUser.password_hash || authUser.password || authUser.passwordHash;
+      if (!storedHash) {
+        return res.status(401).json({ success: false, message: 'Invalid credentials' });
+      }
+
+      const valid = await verifyPassword(password, storedHash);
+      if (!valid) {
+        return res.status(401).json({ success: false, message: 'Invalid credentials' });
+      }
+      console.log('✅ Associate login via local DB auth_user id=', authUser.id, authUser.username);
     }
 
     const displayName =
@@ -414,7 +456,6 @@ router.post('/associate-login', [
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
 
-    console.log('✅ Associate login ok auth_user id=', authUser.id, authUser.username);
     return res.json(
       buildLoginResponse(token, {
         id: authUser.id,
