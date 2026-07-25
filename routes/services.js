@@ -318,6 +318,17 @@ function isLikelyServiceRemark(remark) {
 
 router.get('/remarks', authenticate, async (req, res) => {
   try {
+    try {
+      const { djangoEnabled, consumerGet } = require('../utils/djangoClient');
+      if (djangoEnabled()) {
+        const djangoRes = await consumerGet(req, '/api/v1/services/remarks/');
+        if (djangoRes.status >= 200 && djangoRes.status < 300) {
+          return res.status(djangoRes.status).json(djangoRes.data);
+        }
+      }
+    } catch (djangoErr) {
+      console.warn('Django services remarks failed, falling back:', djangoErr.message);
+    }
     const result = await pool.query(
       `SELECT id, remark FROM ${TABLE_REMARKS} WHERE is_active = true ORDER BY remark ASC`
     );
@@ -356,6 +367,20 @@ function resolveListAccountIds(req, ctx, filterAuthUserId = null) {
 
 router.get('/', authenticate, async (req, res) => {
   try {
+    try {
+      const { djangoEnabled, consumerGet } = require('../utils/djangoClient');
+      if (djangoEnabled()) {
+        const djangoRes = await consumerGet(req, '/api/v1/services/', {
+          cust_id: req.query.cust_id || undefined,
+        });
+        if (djangoRes.status >= 200 && djangoRes.status < 300) {
+          return res.status(djangoRes.status).json(djangoRes.data);
+        }
+        console.warn('Django services list status', djangoRes.status, djangoRes.data);
+      }
+    } catch (djangoErr) {
+      console.warn('Django services list failed, falling back:', djangoErr.message);
+    }
     const ctx = await getAppAccessContext(req);
     if (!ctx) {
       return res.status(401).json({ message: 'Could not identify user' });
@@ -554,6 +579,18 @@ router.get('/:id', authenticate, async (req, res) => {
 
 router.post('/', authenticate, async (req, res) => {
   try {
+    try {
+      const { djangoEnabled, consumerPost } = require('../utils/djangoClient');
+      if (djangoEnabled()) {
+        const djangoRes = await consumerPost(req, '/api/v1/services/create/', req.body || {});
+        if (djangoRes.status >= 200 && djangoRes.status < 300) {
+          return res.status(djangoRes.status).json(djangoRes.data);
+        }
+        console.warn('Django services create status', djangoRes.status, djangoRes.data);
+      }
+    } catch (djangoErr) {
+      console.warn('Django services create failed, falling back:', djangoErr.message);
+    }
     const ctx = await getAppAccessContext(req);
     if (!ctx) {
       return res.status(401).json({ message: 'Could not identify user' });

@@ -153,6 +153,20 @@ function buildComplaintDetailAccessWhere(accountIdCol) {
 
 router.get('/', authenticate, async (req, res) => {
   try {
+    try {
+      const { djangoEnabled, consumerGet } = require('../utils/djangoClient');
+      if (djangoEnabled()) {
+        const djangoRes = await consumerGet(req, '/api/v1/complaints/', {
+          cust_id: req.query.cust_id || undefined,
+        });
+        if (djangoRes.status >= 200 && djangoRes.status < 300) {
+          return res.status(djangoRes.status).json(djangoRes.data);
+        }
+        console.warn('Django complaints list status', djangoRes.status, djangoRes.data);
+      }
+    } catch (djangoErr) {
+      console.warn('Django complaints list failed, falling back:', djangoErr.message);
+    }
     const ctx = await getAppAccessContext(req);
     if (!ctx) {
       return res.status(401).json({ message: 'Could not identify user' });
@@ -875,6 +889,18 @@ router.get('/:id', authenticate, async (req, res) => {
 // Create complaint
 router.post('/', authenticate, optionalComplaintUpload, async (req, res) => {
   try {
+    try {
+      const { djangoEnabled, consumerPost } = require('../utils/djangoClient');
+      if (djangoEnabled() && !(req.files && req.files.length)) {
+        const djangoRes = await consumerPost(req, '/api/v1/complaints/create/', { ...req.body });
+        if (djangoRes.status >= 200 && djangoRes.status < 300) {
+          return res.status(djangoRes.status).json(djangoRes.data);
+        }
+        console.warn('Django complaints create status', djangoRes.status, djangoRes.data);
+      }
+    } catch (djangoErr) {
+      console.warn('Django complaints create failed, falling back:', djangoErr.message);
+    }
     const { category, title, description } = req.body;
     const warrantyType =
       req.body.warrantyType != null ? String(req.body.warrantyType).trim() : '';

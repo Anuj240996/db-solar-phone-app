@@ -500,6 +500,34 @@ router.post('/login', [
     const loginId = String(username).trim();
     console.log('≡ƒö╡ App login attempt for:', loginId);
 
+    // Option A path
+    try {
+      const { djangoEnabled, consumerLogin } = require('../utils/djangoClient');
+      if (djangoEnabled()) {
+        const djangoRes = await consumerLogin(loginId, password);
+        if (djangoRes.status === 200 && djangoRes.data?.success && djangoRes.data?.data?.user) {
+          const u = djangoRes.data.data.user;
+          const source = u.source || 'user_app';
+          const token = jwt.sign(
+            { userId: String(u.id), email: u.email || loginId, source, role: u.role || 'customer' },
+            process.env.JWT_SECRET,
+            { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+          );
+          console.log('Consumer login via Django id=', u.id, 'source=', source);
+          return res.json(buildLoginResponse(token, {
+            id: u.id, name: u.name, email: u.email, phone: u.phone || '',
+            role: u.role || 'customer', address: u.address || '', createdAt: u.createdAt,
+          }));
+        }
+        if (djangoRes.status === 401) {
+          return res.status(401).json({ success: false, message: djangoRes.data?.message || 'Invalid credentials' });
+        }
+        console.warn('Django consumer-login unexpected', djangoRes.status, djangoRes.data);
+      }
+    } catch (djangoErr) {
+      console.warn('Django consumer-login failed, falling back:', djangoErr.message);
+    }
+
     // 1) user_app (app signup / bcrypt password_hash)
     try {
       const uaQuery = await pool.query(

@@ -865,6 +865,19 @@ async function buildMsebDetailsForCustomer(customer, customerResultRow = null) {
 // Get all projects for authenticated customer
 router.get('/', authenticate, async (req, res) => {
   try {
+    try {
+      const { djangoEnabled, consumerGet } = require('../utils/djangoClient');
+      if (djangoEnabled()) {
+        const djangoRes = await consumerGet(req, '/api/v1/projects/');
+        if (djangoRes.status >= 200 && djangoRes.status < 300) {
+          res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+          return res.status(djangoRes.status).json(djangoRes.data);
+        }
+        console.warn('Django projects list status', djangoRes.status, djangoRes.data);
+      }
+    } catch (djangoErr) {
+      console.warn('Django projects list failed, falling back:', djangoErr.message);
+    }
     // Disable caching for project lists to avoid 304 Not Modified responses
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     const ctx = await getAppAccessContext(req);
