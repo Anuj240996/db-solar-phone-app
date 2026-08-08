@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const pool = require('../database/db');
 const { authenticate } = require('../middleware/auth');
 const {
@@ -212,16 +212,14 @@ async function loadAssociateRecords(ctx) {
         surveyDate: r.scheduled_date,
       });
     }
-// 5) Customer / consumers assigned to this associate
-    // Criteria: emp_id_id OR assoc_assign_id OR engg_assign_id = logged-in auth_user.id
+    // 5) Consumers/projects assigned via customer.assoc_assign_id only
+    // (do not use emp_id_id / engg_assign_id — those are employee/engineer, not associate field)
     const customers = await pool.query(
       `SELECT cust_id, consumer, first_name, last_name, middle_name, comp_name,
               city, state, address, plant_capacity, phone, email, cust_type, project_type,
               emp_id_id, assoc_assign_id, engg_assign_id
        FROM customer
-       WHERE emp_id_id = ANY($1::int[])
-          OR assoc_assign_id = ANY($1::int[])
-          OR engg_assign_id = ANY($1::int[])
+       WHERE assoc_assign_id = ANY($1::int[])
        ORDER BY cust_id DESC
        LIMIT 800`,
       [authUserIds]
@@ -248,10 +246,6 @@ async function loadAssociateRecords(ctx) {
         `${c.first_name || ''} ${c.middle_name || ''} ${c.last_name || ''}`.trim() ||
         `AF#${c.consumer || c.cust_id}`;
       const kw = Number(c.plant_capacity || 0);
-      let assignVia = 'employee';
-      if (authUserIds.includes(parseInt(c.assoc_assign_id, 10))) assignVia = 'associate';
-      else if (authUserIds.includes(parseInt(c.engg_assign_id, 10))) assignVia = 'engineer';
-      else if (authUserIds.includes(parseInt(c.emp_id_id, 10))) assignVia = 'employee';
       push({
         id: String(c.cust_id),
         source: 'project',
@@ -268,7 +262,7 @@ async function loadAssociateRecords(ctx) {
         progress: progressForStage(stage),
         nextAction: stage === 'Deployed' ? 'Monitor' : 'Update installation',
         type: c.cust_type || c.project_type,
-        assignVia,
+        assignVia: 'associate',
         createdAt: null,
       });
     }
