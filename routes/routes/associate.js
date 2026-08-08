@@ -205,27 +205,46 @@ async function loadAssociateRecords(ctx) {
       });
     }
 
-    // 5) Customer projects owned by this employee (emp_id_id ΓåÆ auth_user)
+    // 5) Customer / consumers assigned to this associate
+    // Criteria: emp_id_id OR assoc_assign_id OR engg_assign_id = logged-in auth_user.id
     const customers = await pool.query(
       `SELECT cust_id, consumer, first_name, last_name, middle_name, comp_name,
               city, state, address, plant_capacity, phone, email, cust_type, project_type,
-              emp_id_id
+              emp_id_id, assoc_assign_id, engg_assign_id
        FROM customer
        WHERE emp_id_id = ANY($1::int[])
+          OR assoc_assign_id = ANY($1::int[])
+          OR engg_assign_id = ANY($1::int[])
        ORDER BY cust_id DESC
-       LIMIT 500`,
+       LIMIT 800`,
       [authUserIds]
     );
 
     for (const c of customers.rows) {
       const result = await fetchCustomerResultForCustomer(c);
       const resultStatus = computeProjectStatusFromResult(result);
-      const stage = resultStatus === 'Completed' ? 'Deployed' : 'Installation';
+      let stage = 'Installation';
+      const st = String(resultStatus || '').toLowerCase();
+      if (st.includes('complete') || st.includes('deploy') || st.includes('live')) {
+        stage = 'Deployed';
+      } else if (st.includes('approv') || st.includes('agreement')) {
+        stage = 'Approval';
+      } else if (st.includes('quot')) {
+        stage = 'Quotation';
+      } else if (st.includes('survey') || st.includes('site')) {
+        stage = 'Site Survey';
+      } else if (st.includes('install') || st.includes('progress') || st.includes('pending')) {
+        stage = 'Installation';
+      }
       const name =
         c.comp_name ||
         `${c.first_name || ''} ${c.middle_name || ''} ${c.last_name || ''}`.trim() ||
         `AF#${c.consumer || c.cust_id}`;
       const kw = Number(c.plant_capacity || 0);
+      let assignVia = 'employee';
+      if (authUserIds.includes(parseInt(c.assoc_assign_id, 10))) assignVia = 'associate';
+      else if (authUserIds.includes(parseInt(c.engg_assign_id, 10))) assignVia = 'engineer';
+      else if (authUserIds.includes(parseInt(c.emp_id_id, 10))) assignVia = 'employee';
       push({
         id: String(c.cust_id),
         source: 'project',
@@ -238,10 +257,11 @@ async function loadAssociateRecords(ctx) {
         capacity: kw > 0 ? `${kw.toFixed(2)} kWp` : null,
         capacityKwp: kw,
         stage,
-        status: resultStatus,
+        status: resultStatus || stage,
         progress: progressForStage(stage),
         nextAction: stage === 'Deployed' ? 'Monitor' : 'Update installation',
         type: c.cust_type || c.project_type,
+        assignVia,
         createdAt: null,
       });
     }
@@ -273,21 +293,40 @@ function buildPipeline(items) {
 }
 
 function buildOverview(items) {
-  const total = items.length;
+  // Consumers/projects = CRM leads + assigned customer records (dedupe by source:id already done)
+  const consumerItems = items.filter((i) =>
+    ['project', 'crm_lead', 'app_lead', 'quotation'].includes(i.source)
+  );
+  const projectItems = items.filter((i) => i.source === 'project');
+  const totalConsumers = consumerItems.length;
+  const totalProjects = projectItems.length > 0 ? projectItems.length : consumerItems.length;
+
   const completed = items.filter((i) => i.stage === 'Deployed').length;
   const inProgress = items.filter((i) =>
     ['Site Survey', 'Quotation', 'Approval', 'Installation'].includes(i.stage)
   ).length;
   const pending = items.filter((i) => i.stage === 'Lead' || i.stage === 'Approval').length;
   const capacity = items.reduce((s, i) => s + (Number(i.capacityKwp) || 0), 0);
+
+  const statusMap = {};
+  for (const i of items) {
+    const key = i.status || i.stage || 'Unknown';
+    statusMap[key] = (statusMap[key] || 0) + 1;
+  }
+  const statusBreakdown = Object.entries(statusMap)
+    .map(([status, count]) => ({ status, count }))
+    .sort((a, b) => b.count - a.count);
+
   return {
-    totalProjects: total,
+    totalProjects,
+    totalConsumers,
     inProgress,
     pendingAction: pending,
     completed,
     deployed: completed,
     awaitingAction: pending,
     totalCapacityKwp: Math.round(capacity * 100) / 100,
+    statusBreakdown,
   };
 }
 
@@ -360,16 +399,18 @@ router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
     const recentProjects = items
       .filter((i) => i.source === 'project' || i.source === 'quotation' || i.stage !== 'Lead')
       .slice(0, 8)
-      .map((i) => ({
+              .map((i) => ({
         name: i.name,
         customer: i.customer,
-        capacity: i.capacity || 'ΓÇö',
-        location: i.location || i.city || 'ΓÇö',
+        capacity: i.capacity || '—',
+        location: i.location || i.city || '—',
         type: i.type || '',
         stage: i.stage,
+        status: i.status,
         progress: i.progress,
         id: i.id,
         source: i.source,
+        assignVia: i.assignVia,
       }));
 
     const siteVisitsToday = items.filter((i) => {
@@ -391,6 +432,7 @@ router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
         email: ctx.email,
         linkedAuthUserIds: ctx.authUserIds,
       },
+      // Scoped only to this associate's assigned consumers / projects
       overview,
       pipeline,
       tasks: tasks.slice(0, 10),
@@ -401,14 +443,29 @@ router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
           : items.slice(0, 5).map((i) => ({
               name: i.name,
               customer: i.customer,
-              capacity: i.capacity || 'ΓÇö',
-              location: i.location || 'ΓÇö',
+              capacity: i.capacity || '—',
+              location: i.location || '—',
               type: i.type || '',
               stage: i.stage,
+              status: i.status,
               progress: i.progress,
               id: i.id,
               source: i.source,
+              assignVia: i.assignVia,
             })),
+      consumers: items
+        .filter((i) => ['project', 'crm_lead'].includes(i.source))
+        .slice(0, 50)
+        .map((i) => ({
+          id: i.id,
+          name: i.name,
+          stage: i.stage,
+          status: i.status,
+          location: i.location,
+          capacity: i.capacity,
+          source: i.source,
+          assignVia: i.assignVia || null,
+        })),
       snapshot: {
         capacityPlannedKwp: overview.totalCapacityKwp,
         estGenerationKwh: estGen,

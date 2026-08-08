@@ -3,8 +3,6 @@ FROM node:20-alpine
 ARG CACHE_BUST=1
 ENV BUILD_STAMP=${CACHE_BUST}
 
-RUN apk add --no-cache curl
-
 WORKDIR /app
 
 COPY package.json package-lock.json ./
