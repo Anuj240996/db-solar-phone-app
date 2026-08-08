@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const pool = require('../database/db');
 const { authenticate } = require('../middleware/auth');
 const {
@@ -212,16 +212,14 @@ async function loadAssociateRecords(ctx) {
         surveyDate: r.scheduled_date,
       });
     }
-// 5) Customer / consumers assigned to this associate
-    // Criteria: emp_id_id OR assoc_assign_id OR engg_assign_id = logged-in auth_user.id
+    // 5) Consumers/projects assigned via customer.assoc_assign_id only
+    // (do not use emp_id_id / engg_assign_id — those are employee/engineer, not associate field)
     const customers = await pool.query(
       `SELECT cust_id, consumer, first_name, last_name, middle_name, comp_name,
               city, state, address, plant_capacity, phone, email, cust_type, project_type,
               emp_id_id, assoc_assign_id, engg_assign_id
        FROM customer
-       WHERE emp_id_id = ANY($1::int[])
-          OR assoc_assign_id = ANY($1::int[])
-          OR engg_assign_id = ANY($1::int[])
+       WHERE assoc_assign_id = ANY($1::int[])
        ORDER BY cust_id DESC
        LIMIT 800`,
       [authUserIds]
@@ -248,10 +246,6 @@ async function loadAssociateRecords(ctx) {
         `${c.first_name || ''} ${c.middle_name || ''} ${c.last_name || ''}`.trim() ||
         `AF#${c.consumer || c.cust_id}`;
       const kw = Number(c.plant_capacity || 0);
-      let assignVia = 'employee';
-      if (authUserIds.includes(parseInt(c.assoc_assign_id, 10))) assignVia = 'associate';
-      else if (authUserIds.includes(parseInt(c.engg_assign_id, 10))) assignVia = 'engineer';
-      else if (authUserIds.includes(parseInt(c.emp_id_id, 10))) assignVia = 'employee';
       push({
         id: String(c.cust_id),
         source: 'project',
@@ -268,7 +262,7 @@ async function loadAssociateRecords(ctx) {
         progress: progressForStage(stage),
         nextAction: stage === 'Deployed' ? 'Monitor' : 'Update installation',
         type: c.cust_type || c.project_type,
-        assignVia,
+        assignVia: 'associate',
         createdAt: null,
       });
     }
@@ -301,26 +295,31 @@ function buildPipeline(items) {
 }
 
 function buildOverview(items) {
-  const consumerItems = items.filter((i) =>
-    ['project', 'crm_lead', 'app_lead', 'quotation'].includes(i.source)
-  );
-  const projectItems = items.filter((i) => i.source === 'project');
+  // Prefer consumers assigned via assoc_assign_id (source=project)
+  const assignedConsumers = items.filter((i) => i.source === 'project');
+  const consumerItems =
+    assignedConsumers.length > 0
+      ? assignedConsumers
+      : items.filter((i) => ['project', 'crm_lead', 'app_lead'].includes(i.source));
+
   const totalConsumers = consumerItems.length;
-  const totalProjects = projectItems.length > 0 ? projectItems.length : consumerItems.length;
-  const completed = items.filter((i) => i.stage === 'Deployed').length;
-  const inProgress = items.filter((i) =>
+  const totalProjects = totalConsumers;
+  const completed = consumerItems.filter((i) => i.stage === 'Deployed').length;
+  const inProgress = consumerItems.filter((i) =>
     ['Site Survey', 'Quotation', 'Approval', 'Installation'].includes(i.stage)
   ).length;
-  const pending = items.filter((i) => i.stage === 'Lead' || i.stage === 'Approval').length;
-  const capacity = items.reduce((acc, i) => acc + (Number(i.capacityKwp) || 0), 0);
+  const pending = consumerItems.filter((i) => i.stage === 'Lead' || i.stage === 'Approval').length;
+  const capacity = consumerItems.reduce((acc, i) => acc + (Number(i.capacityKwp) || 0), 0);
+
   const statusMap = {};
-  for (const i of items) {
-    const key = i.status || i.stage || 'Unknown';
+  for (const i of consumerItems) {
+    const key = String(i.status || i.stage || 'Unknown');
     statusMap[key] = (statusMap[key] || 0) + 1;
   }
   const statusBreakdown = Object.entries(statusMap)
     .map(([status, count]) => ({ status, count }))
     .sort((a, b) => b.count - a.count);
+
   return {
     totalProjects,
     totalConsumers,
@@ -331,6 +330,7 @@ function buildOverview(items) {
     awaitingAction: pending,
     totalCapacityKwp: Math.round(capacity * 100) / 100,
     statusBreakdown,
+    filter: 'customer.assoc_assign_id',
   };
 }
 
