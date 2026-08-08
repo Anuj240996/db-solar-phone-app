@@ -11,6 +11,7 @@ const {
 const {
   fetchCustomerResultForCustomer,
   computeProjectStatusFromResult,
+  bitToBoolean,
 } = require('../utils/customerResult');
 
 const router = express.Router();
@@ -294,40 +295,105 @@ function buildPipeline(items) {
   });
 }
 
-function buildOverview(items) {
-  // Prefer consumers assigned via assoc_assign_id (source=project)
-  const assignedConsumers = items.filter((i) => i.source === 'project');
-  const consumerItems =
-    assignedConsumers.length > 0
-      ? assignedConsumers
-      : items.filter((i) => ['project', 'crm_lead', 'app_lead'].includes(i.source));
+async function loadCustomersByAssociate(authUserIds) {
+  if (!authUserIds.length) return [];
+  const customers = await pool.query(
+    `SELECT cust_id, consumer, first_name, last_name, middle_name, comp_name,
+            city, state, address, plant_capacity, phone, email, cust_type, project_type,
+            assoc_assign_id
+     FROM customer
+     WHERE assoc_assign_id = ANY($1::int[])
+     ORDER BY cust_id DESC
+     LIMIT 800`,
+    [authUserIds]
+  );
 
-  const totalConsumers = consumerItems.length;
-  const totalProjects = totalConsumers;
-  const completed = consumerItems.filter((i) => i.stage === 'Deployed').length;
-  const inProgress = consumerItems.filter((i) =>
-    ['Site Survey', 'Quotation', 'Approval', 'Installation'].includes(i.stage)
-  ).length;
-  const pending = consumerItems.filter((i) => i.stage === 'Lead' || i.stage === 'Approval').length;
-  const capacity = consumerItems.reduce((acc, i) => acc + (Number(i.capacityKwp) || 0), 0);
+  const items = [];
+  for (const c of customers.rows) {
+    const result = await fetchCustomerResultForCustomer(c);
+    const resultStatus = computeProjectStatusFromResult(result); // Completed | Pending
+    let status = resultStatus || 'Pending';
+    let stage = 'Installation';
+
+    // Refine Pending → In Progress when some install flags are set
+    if (status === 'Pending' && result) {
+      const anyStarted =
+        bitToBoolean(result.solar_panel) ||
+        bitToBoolean(result.inverter) ||
+        bitToBoolean(result.net_meter) ||
+        bitToBoolean(result.mseb);
+      if (anyStarted) {
+        status = 'In Progress';
+        stage = 'Installation';
+      } else {
+        status = 'Pending';
+        stage = 'Lead';
+      }
+    } else if (status === 'Completed') {
+      stage = 'Deployed';
+    }
+
+    const name =
+      c.comp_name ||
+      `${c.first_name || ''} ${c.middle_name || ''} ${c.last_name || ''}`.trim() ||
+      `AF#${c.consumer || c.cust_id}`;
+    const kw = Number(c.plant_capacity || 0);
+    items.push({
+      id: String(c.cust_id),
+      source: 'project',
+      name,
+      customer: name,
+      phone: c.phone != null ? String(c.phone) : null,
+      email: c.email,
+      location: [c.city, c.state].filter(Boolean).join(', ') || c.address || '',
+      city: c.city,
+      capacity: kw > 0 ? `${kw.toFixed(2)} kWp` : null,
+      capacityKwp: kw,
+      stage,
+      status,
+      progress: status === 'Completed' ? 1 : status === 'In Progress' ? 0.55 : 0.15,
+      nextAction: status === 'Completed' ? 'Monitor' : 'Update project',
+      type: c.cust_type || c.project_type,
+      assignVia: 'associate',
+      createdAt: null,
+    });
+  }
+  return items;
+}
+
+/** Overview cards: ONLY customer rows where assoc_assign_id = logged-in associate */
+function buildOverview(items) {
+  return buildCustomerOverview((items || []).filter((i) => i.source === 'project'));
+}
+function buildCustomerOverview(customerItems) {
+  const totalProjects = customerItems.length;
+  const completed = customerItems.filter((i) => i.status === 'Completed' || i.stage === 'Deployed').length;
+  const inProgress = customerItems.filter((i) => i.status === 'In Progress').length;
+  const pendingAction = customerItems.filter((i) => i.status === 'Pending').length;
+  const capacity = customerItems.reduce((acc, i) => acc + (Number(i.capacityKwp) || 0), 0);
 
   const statusMap = {};
-  for (const i of consumerItems) {
-    const key = String(i.status || i.stage || 'Unknown');
+  for (const i of customerItems) {
+    const key = String(i.status || 'Pending');
     statusMap[key] = (statusMap[key] || 0) + 1;
   }
-  const statusBreakdown = Object.entries(statusMap)
-    .map(([status, count]) => ({ status, count }))
-    .sort((a, b) => b.count - a.count);
+  const statusBreakdown = ['Completed', 'In Progress', 'Pending']
+    .filter((s) => statusMap[s])
+    .map((status) => ({ status, count: statusMap[status] }))
+    .concat(
+      Object.entries(statusMap)
+        .filter(([s]) => !['Completed', 'In Progress', 'Pending'].includes(s))
+        .map(([status, count]) => ({ status, count }))
+    );
 
   return {
     totalProjects,
-    totalConsumers,
+    totalConsumers: totalProjects,
     inProgress,
-    pendingAction: pending,
+    pendingAction,
     completed,
     deployed: completed,
-    awaitingAction: pending,
+    awaitingAction: pendingAction,
     totalCapacityKwp: Math.round(capacity * 100) / 100,
     statusBreakdown,
     filter: 'customer.assoc_assign_id',
@@ -393,52 +459,44 @@ function buildActivities(items) {
 
 router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
   try {
-    // Option A: proxy to Django when configured
-    try {
-      const { djangoEnabled, associateGet } = require('../utils/djangoClient');
-      if (djangoEnabled()) {
-        const authUserId =
-          req.user?.auth_user_id ??
-          req.user?.jwt_user_id ??
-          (String(req.user?.auth_source || req.user?.jwt_source || '').toLowerCase() === 'auth_user'
-            ? req.user?.id ?? req.user?.userId
-            : null);
-        if (authUserId != null) {
-          const djangoRes = await associateGet(
-            '/api/v1/associate/dashboard/',
-            authUserId
-          );
-          if (djangoRes.status >= 200 && djangoRes.status < 300) {
-            return res.status(djangoRes.status).json(djangoRes.data);
-          }
-          console.warn('Django associate dashboard status', djangoRes.status, djangoRes.data);
-        }
-      }
-    } catch (djangoErr) {
-      console.warn('Django associate dashboard failed, falling back:', djangoErr.message);
-    }
-
+    // Overview cards: ONLY customer where assoc_assign_id = logged-in associate.
+    // Do not let Django proxy replace these counts.
     await ensureAssociateAuthUserColumn();
     const ctx = await resolveAssociateContext(req.user);
-    const items = await loadAssociateRecords(ctx);
-    const overview = buildOverview(items);
-    const pipeline = buildPipeline(items);
+    const customerItems = await loadCustomersByAssociate(ctx.authUserIds || []);
+    const overview = buildCustomerOverview(customerItems);
+
+    let items = [...customerItems];
+    try {
+      const all = await loadAssociateRecords(ctx);
+      const seen = new Set(customerItems.map((i) => 'project:' + i.id));
+      for (const row of all) {
+        const key = row.source + ':' + row.id;
+        if (seen.has(key)) continue;
+        if (row.source === 'project') continue;
+        seen.add(key);
+        items.push(row);
+      }
+    } catch (loadErr) {
+      console.warn('associate extra records load failed:', loadErr.message);
+    }
+
+    const pipeline = buildPipeline(customerItems.length ? customerItems : items);
     const tasks = buildTasks(items);
     const activities = buildActivities(items).slice(0, 5);
-    const recentProjects = items
-      .filter((i) => i.source === 'project' || i.source === 'quotation' || i.stage !== 'Lead')
-      .slice(0, 8)
-      .map((i) => ({
-        name: i.name,
-        customer: i.customer,
-        capacity: i.capacity || '?',
-        location: i.location || i.city || '?',
-        type: i.type || '',
-        stage: i.stage,
-        progress: i.progress,
-        id: i.id,
-        source: i.source,
-      }));
+    const recentProjects = customerItems.slice(0, 8).map((i) => ({
+      name: i.name,
+      customer: i.customer,
+      capacity: i.capacity || '-',
+      location: i.location || i.city || '-',
+      type: i.type || '',
+      stage: i.stage,
+      status: i.status,
+      progress: i.progress,
+      id: i.id,
+      source: i.source,
+      assignVia: 'associate',
+    }));
 
     const siteVisitsToday = items.filter((i) => {
       if (!i.surveyDate && !i.followUp) return false;
@@ -448,7 +506,7 @@ router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
     }).length;
 
     const tasksDueToday = tasks.filter((t) => t.due === 'Today').length;
-    const estGen = Math.round(overview.totalCapacityKwp * 4 * 10) / 10; // rough kWh/day
+    const estGen = Math.round(overview.totalCapacityKwp * 4 * 10) / 10;
 
     res.json({
       success: true,
@@ -463,33 +521,17 @@ router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
       pipeline,
       tasks: tasks.slice(0, 10),
       activities,
-      recentProjects:
-        recentProjects.length > 0
-          ? recentProjects
-          : items.slice(0, 5).map((i) => ({
-              name: i.name,
-              customer: i.customer,
-              capacity: i.capacity || '?',
-              location: i.location || '?',
-              type: i.type || '',
-              stage: i.stage,
-              progress: i.progress,
-              id: i.id,
-              source: i.source,
-            })),
-      consumers: items
-        .filter((i) => ['project', 'crm_lead'].includes(i.source))
-        .slice(0, 50)
-        .map((i) => ({
-          id: i.id,
-          name: i.name,
-          stage: i.stage,
-          status: i.status,
-          location: i.location,
-          capacity: i.capacity,
-          source: i.source,
-          assignVia: i.assignVia || null,
-        })),
+      recentProjects,
+      consumers: customerItems.slice(0, 50).map((i) => ({
+        id: i.id,
+        name: i.name,
+        stage: i.stage,
+        status: i.status,
+        location: i.location,
+        capacity: i.capacity,
+        source: i.source,
+        assignVia: 'associate',
+      })),
       snapshot: {
         capacityPlannedKwp: overview.totalCapacityKwp,
         estGenerationKwh: estGen,
@@ -499,7 +541,7 @@ router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
       insights: {
         pipelineValueLakh:
           Math.round(
-            (items.reduce((s, i) => s + (Number(i.estimatedValue) || 0), 0) / 100000) * 100
+            (items.reduce((sum, i) => sum + (Number(i.estimatedValue) || 0), 0) / 100000) * 100
           ) / 100,
         surveysDue: pipeline.find((p) => p.stage === 'Site Survey')?.count || 0,
         followUps: tasksDueToday,
@@ -541,11 +583,18 @@ router.get('/projects', authenticate, requireAssociate, async (req, res) => {
     const ctx = await resolveAssociateContext(req.user);
     const stage = String(req.query.stage || 'All').trim();
     const q = String(req.query.q || '').trim().toLowerCase();
-    let items = await loadAssociateRecords(ctx);
+    // Primary list: customer.assoc_assign_id for this associate
+    let items = await loadCustomersByAssociate(ctx.authUserIds || []);
+    if (items.length === 0) {
+      items = await loadAssociateRecords(ctx);
+    }
 
     if (stage && stage !== 'All') {
       const needle = stage.toLowerCase() === 'survey' ? 'site survey' : stage.toLowerCase();
-      items = items.filter((i) => i.stage.toLowerCase().includes(needle));
+      items = items.filter((i) =>
+        i.stage.toLowerCase().includes(needle) ||
+        String(i.status || '').toLowerCase().includes(needle)
+      );
     }
     if (q) {
       items = items.filter((i) =>
