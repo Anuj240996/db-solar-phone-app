@@ -11,6 +11,7 @@ const {
 const {
   fetchCustomerResultForCustomer,
   computeProjectStatusFromResult,
+  bitToBoolean,
 } = require('../utils/customerResult');
 
 const router = express.Router();
@@ -316,9 +317,6 @@ async function loadCustomersByAssociate(authUserIds) {
 
     // Refine Pending → In Progress when some install flags are set
     if (status === 'Pending' && result) {
-      const {
-        bitToBoolean,
-      } = require('../utils/customerResult');
       const anyStarted =
         bitToBoolean(result.solar_panel) ||
         bitToBoolean(result.inverter) ||
