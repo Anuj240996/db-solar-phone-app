@@ -294,40 +294,105 @@ function buildPipeline(items) {
   });
 }
 
-function buildOverview(items) {
-  // Prefer consumers assigned via assoc_assign_id (source=project)
-  const assignedConsumers = items.filter((i) => i.source === 'project');
-  const consumerItems =
-    assignedConsumers.length > 0
-      ? assignedConsumers
-      : items.filter((i) => ['project', 'crm_lead', 'app_lead'].includes(i.source));
+async function loadCustomersByAssociate(authUserIds) {
+  if (!authUserIds.length) return [];
+  const customers = await pool.query(
+    `SELECT cust_id, consumer, first_name, last_name, middle_name, comp_name,
+            city, state, address, plant_capacity, phone, email, cust_type, project_type,
+            assoc_assign_id
+     FROM customer
+     WHERE assoc_assign_id = ANY($1::int[])
+     ORDER BY cust_id DESC
+     LIMIT 800`,
+    [authUserIds]
+  );
 
-  const totalConsumers = consumerItems.length;
-  const totalProjects = totalConsumers;
-  const completed = consumerItems.filter((i) => i.stage === 'Deployed').length;
-  const inProgress = consumerItems.filter((i) =>
-    ['Site Survey', 'Quotation', 'Approval', 'Installation'].includes(i.stage)
-  ).length;
-  const pending = consumerItems.filter((i) => i.stage === 'Lead' || i.stage === 'Approval').length;
-  const capacity = consumerItems.reduce((acc, i) => acc + (Number(i.capacityKwp) || 0), 0);
+  const items = [];
+  for (const c of customers.rows) {
+    const result = await fetchCustomerResultForCustomer(c);
+    const resultStatus = computeProjectStatusFromResult(result); // Completed | Pending
+    let status = resultStatus || 'Pending';
+    let stage = 'Installation';
+
+    // Refine Pending → In Progress when some install flags are set
+    if (status === 'Pending' && result) {
+      const {
+        bitToBoolean,
+      } = require('../utils/customerResult');
+      const anyStarted =
+        bitToBoolean(result.solar_panel) ||
+        bitToBoolean(result.inverter) ||
+        bitToBoolean(result.net_meter) ||
+        bitToBoolean(result.mseb);
+      if (anyStarted) {
+        status = 'In Progress';
+        stage = 'Installation';
+      } else {
+        status = 'Pending';
+        stage = 'Lead';
+      }
+    } else if (status === 'Completed') {
+      stage = 'Deployed';
+    }
+
+    const name =
+      c.comp_name ||
+      `${c.first_name || ''} ${c.middle_name || ''} ${c.last_name || ''}`.trim() ||
+      `AF#${c.consumer || c.cust_id}`;
+    const kw = Number(c.plant_capacity || 0);
+    items.push({
+      id: String(c.cust_id),
+      source: 'project',
+      name,
+      customer: name,
+      phone: c.phone != null ? String(c.phone) : null,
+      email: c.email,
+      location: [c.city, c.state].filter(Boolean).join(', ') || c.address || '',
+      city: c.city,
+      capacity: kw > 0 ? `${kw.toFixed(2)} kWp` : null,
+      capacityKwp: kw,
+      stage,
+      status,
+      progress: status === 'Completed' ? 1 : status === 'In Progress' ? 0.55 : 0.15,
+      nextAction: status === 'Completed' ? 'Monitor' : 'Update project',
+      type: c.cust_type || c.project_type,
+      assignVia: 'associate',
+      createdAt: null,
+    });
+  }
+  return items;
+}
+
+/** Overview cards: ONLY customer rows where assoc_assign_id = logged-in associate */
+function buildCustomerOverview(customerItems) {
+  const totalProjects = customerItems.length;
+  const completed = customerItems.filter((i) => i.status === 'Completed' || i.stage === 'Deployed').length;
+  const inProgress = customerItems.filter((i) => i.status === 'In Progress').length;
+  const pendingAction = customerItems.filter((i) => i.status === 'Pending').length;
+  const capacity = customerItems.reduce((acc, i) => acc + (Number(i.capacityKwp) || 0), 0);
 
   const statusMap = {};
-  for (const i of consumerItems) {
-    const key = String(i.status || i.stage || 'Unknown');
+  for (const i of customerItems) {
+    const key = String(i.status || 'Pending');
     statusMap[key] = (statusMap[key] || 0) + 1;
   }
-  const statusBreakdown = Object.entries(statusMap)
-    .map(([status, count]) => ({ status, count }))
-    .sort((a, b) => b.count - a.count);
+  const statusBreakdown = ['Completed', 'In Progress', 'Pending']
+    .filter((s) => statusMap[s])
+    .map((status) => ({ status, count: statusMap[status] }))
+    .concat(
+      Object.entries(statusMap)
+        .filter(([s]) => !['Completed', 'In Progress', 'Pending'].includes(s))
+        .map(([status, count]) => ({ status, count }))
+    );
 
   return {
     totalProjects,
-    totalConsumers,
+    totalConsumers: totalProjects,
     inProgress,
-    pendingAction: pending,
+    pendingAction,
     completed,
     deployed: completed,
-    awaitingAction: pending,
+    awaitingAction: pendingAction,
     totalCapacityKwp: Math.round(capacity * 100) / 100,
     statusBreakdown,
     filter: 'customer.assoc_assign_id',
