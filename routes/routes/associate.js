@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const pool = require('../database/db');
 const { authenticate } = require('../middleware/auth');
 const {
@@ -27,16 +27,24 @@ const STAGE_META = [
 function requireAssociate(req, res, next) {
   const role = String(req.user?.role || req.user?.jwt_role || '').toLowerCase();
   const name = String(req.user?.name || req.user?.username || '').toLowerCase();
-  // Only dedicated Associate Login sessions (JWT role=associate) or aso_* names
+  const source = String(req.user?.auth_source || req.user?.jwt_source || '').toLowerCase();
+  const staff =
+    req.user?.is_staff === true ||
+    String(req.user?.is_staff || '').toLowerCase() === 'true' ||
+    String(req.user?.is_staff || '') === '1';
   const isAso =
     role === 'associate' ||
     role === 'aso' ||
-    name.startsWith('aso_');
+    role === 'employee' ||
+    role === 'staff' ||
+    name.startsWith('aso_') ||
+    (source === 'auth_user' && (role === 'associate' || staff || req.user?.auth_user_id != null));
   if (!isAso) {
     return res.status(403).json({
       message: 'Associate access only',
       role: req.user?.role,
       jwt_role: req.user?.jwt_role,
+      source,
     });
   }
   return next();
@@ -205,46 +213,27 @@ async function loadAssociateRecords(ctx) {
       });
     }
 
-    // 5) Customer / consumers assigned to this associate
-    // Criteria: emp_id_id OR assoc_assign_id OR engg_assign_id = logged-in auth_user.id
+    // 5) Customer projects owned by this employee (emp_id_id ??? auth_user)
     const customers = await pool.query(
       `SELECT cust_id, consumer, first_name, last_name, middle_name, comp_name,
               city, state, address, plant_capacity, phone, email, cust_type, project_type,
-              emp_id_id, assoc_assign_id, engg_assign_id
+              emp_id_id
        FROM customer
        WHERE emp_id_id = ANY($1::int[])
-          OR assoc_assign_id = ANY($1::int[])
-          OR engg_assign_id = ANY($1::int[])
        ORDER BY cust_id DESC
-       LIMIT 800`,
+       LIMIT 500`,
       [authUserIds]
     );
 
     for (const c of customers.rows) {
       const result = await fetchCustomerResultForCustomer(c);
       const resultStatus = computeProjectStatusFromResult(result);
-      let stage = 'Installation';
-      const st = String(resultStatus || '').toLowerCase();
-      if (st.includes('complete') || st.includes('deploy') || st.includes('live')) {
-        stage = 'Deployed';
-      } else if (st.includes('approv') || st.includes('agreement')) {
-        stage = 'Approval';
-      } else if (st.includes('quot')) {
-        stage = 'Quotation';
-      } else if (st.includes('survey') || st.includes('site')) {
-        stage = 'Site Survey';
-      } else if (st.includes('install') || st.includes('progress') || st.includes('pending')) {
-        stage = 'Installation';
-      }
+      const stage = resultStatus === 'Completed' ? 'Deployed' : 'Installation';
       const name =
         c.comp_name ||
         `${c.first_name || ''} ${c.middle_name || ''} ${c.last_name || ''}`.trim() ||
         `AF#${c.consumer || c.cust_id}`;
       const kw = Number(c.plant_capacity || 0);
-      let assignVia = 'employee';
-      if (authUserIds.includes(parseInt(c.assoc_assign_id, 10))) assignVia = 'associate';
-      else if (authUserIds.includes(parseInt(c.engg_assign_id, 10))) assignVia = 'engineer';
-      else if (authUserIds.includes(parseInt(c.emp_id_id, 10))) assignVia = 'employee';
       push({
         id: String(c.cust_id),
         source: 'project',
@@ -257,11 +246,10 @@ async function loadAssociateRecords(ctx) {
         capacity: kw > 0 ? `${kw.toFixed(2)} kWp` : null,
         capacityKwp: kw,
         stage,
-        status: resultStatus || stage,
+        status: resultStatus,
         progress: progressForStage(stage),
         nextAction: stage === 'Deployed' ? 'Monitor' : 'Update installation',
         type: c.cust_type || c.project_type,
-        assignVia,
         createdAt: null,
       });
     }
@@ -276,7 +264,7 @@ function buildPipeline(items) {
     const value = stageItems.reduce((s, i) => s + (Number(i.estimatedValue) || 0), 0);
     let insight = `${stageItems.length} projects`;
     if (meta.stage === 'Quotation' && value > 0) {
-      insight = `Γé╣${(value / 100000).toFixed(1)}L quoted`;
+      insight = `???${(value / 100000).toFixed(1)}L quoted`;
     } else if (meta.stage === 'Lead') {
       insight = `${stageItems.length} open`;
     } else if (meta.stage === 'Site Survey') {
@@ -293,40 +281,21 @@ function buildPipeline(items) {
 }
 
 function buildOverview(items) {
-  // Consumers/projects = CRM leads + assigned customer records (dedupe by source:id already done)
-  const consumerItems = items.filter((i) =>
-    ['project', 'crm_lead', 'app_lead', 'quotation'].includes(i.source)
-  );
-  const projectItems = items.filter((i) => i.source === 'project');
-  const totalConsumers = consumerItems.length;
-  const totalProjects = projectItems.length > 0 ? projectItems.length : consumerItems.length;
-
+  const total = items.length;
   const completed = items.filter((i) => i.stage === 'Deployed').length;
   const inProgress = items.filter((i) =>
     ['Site Survey', 'Quotation', 'Approval', 'Installation'].includes(i.stage)
   ).length;
   const pending = items.filter((i) => i.stage === 'Lead' || i.stage === 'Approval').length;
   const capacity = items.reduce((s, i) => s + (Number(i.capacityKwp) || 0), 0);
-
-  const statusMap = {};
-  for (const i of items) {
-    const key = i.status || i.stage || 'Unknown';
-    statusMap[key] = (statusMap[key] || 0) + 1;
-  }
-  const statusBreakdown = Object.entries(statusMap)
-    .map(([status, count]) => ({ status, count }))
-    .sort((a, b) => b.count - a.count);
-
   return {
-    totalProjects,
-    totalConsumers,
+    totalProjects: total,
     inProgress,
     pendingAction: pending,
     completed,
     deployed: completed,
     awaitingAction: pending,
     totalCapacityKwp: Math.round(capacity * 100) / 100,
-    statusBreakdown,
   };
 }
 
@@ -389,6 +358,31 @@ function buildActivities(items) {
 
 router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
   try {
+    // Option A: proxy to Django when configured
+    try {
+      const { djangoEnabled, associateGet } = require('../utils/djangoClient');
+      if (djangoEnabled()) {
+        const authUserId =
+          req.user?.auth_user_id ??
+          req.user?.jwt_user_id ??
+          (String(req.user?.auth_source || req.user?.jwt_source || '').toLowerCase() === 'auth_user'
+            ? req.user?.id ?? req.user?.userId
+            : null);
+        if (authUserId != null) {
+          const djangoRes = await associateGet(
+            '/api/v1/associate/dashboard/',
+            authUserId
+          );
+          if (djangoRes.status >= 200 && djangoRes.status < 300) {
+            return res.status(djangoRes.status).json(djangoRes.data);
+          }
+          console.warn('Django associate dashboard status', djangoRes.status, djangoRes.data);
+        }
+      }
+    } catch (djangoErr) {
+      console.warn('Django associate dashboard failed, falling back:', djangoErr.message);
+    }
+
     await ensureAssociateAuthUserColumn();
     const ctx = await resolveAssociateContext(req.user);
     const items = await loadAssociateRecords(ctx);
@@ -399,18 +393,16 @@ router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
     const recentProjects = items
       .filter((i) => i.source === 'project' || i.source === 'quotation' || i.stage !== 'Lead')
       .slice(0, 8)
-              .map((i) => ({
+      .map((i) => ({
         name: i.name,
         customer: i.customer,
-        capacity: i.capacity || '—',
-        location: i.location || i.city || '—',
+        capacity: i.capacity || '?',
+        location: i.location || i.city || '?',
         type: i.type || '',
         stage: i.stage,
-        status: i.status,
         progress: i.progress,
         id: i.id,
         source: i.source,
-        assignVia: i.assignVia,
       }));
 
     const siteVisitsToday = items.filter((i) => {
@@ -432,7 +424,6 @@ router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
         email: ctx.email,
         linkedAuthUserIds: ctx.authUserIds,
       },
-      // Scoped only to this associate's assigned consumers / projects
       overview,
       pipeline,
       tasks: tasks.slice(0, 10),
@@ -443,29 +434,14 @@ router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
           : items.slice(0, 5).map((i) => ({
               name: i.name,
               customer: i.customer,
-              capacity: i.capacity || '—',
-              location: i.location || '—',
+              capacity: i.capacity || '?',
+              location: i.location || '?',
               type: i.type || '',
               stage: i.stage,
-              status: i.status,
               progress: i.progress,
               id: i.id,
               source: i.source,
-              assignVia: i.assignVia,
             })),
-      consumers: items
-        .filter((i) => ['project', 'crm_lead'].includes(i.source))
-        .slice(0, 50)
-        .map((i) => ({
-          id: i.id,
-          name: i.name,
-          stage: i.stage,
-          status: i.status,
-          location: i.location,
-          capacity: i.capacity,
-          source: i.source,
-          assignVia: i.assignVia || null,
-        })),
       snapshot: {
         capacityPlannedKwp: overview.totalCapacityKwp,
         estGenerationKwh: estGen,
@@ -490,6 +466,30 @@ router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
 
 router.get('/projects', authenticate, requireAssociate, async (req, res) => {
   try {
+    try {
+      const { djangoEnabled, associateGet } = require('../utils/djangoClient');
+      if (djangoEnabled()) {
+        const authUserId =
+          req.user?.auth_user_id ??
+          req.user?.jwt_user_id ??
+          (String(req.user?.auth_source || req.user?.jwt_source || '').toLowerCase() === 'auth_user'
+            ? req.user?.id ?? req.user?.userId
+            : null);
+        if (authUserId != null) {
+          const djangoRes = await associateGet('/api/v1/associate/projects/', authUserId, {
+            stage: req.query.stage || 'All',
+            q: req.query.q || '',
+          });
+          if (djangoRes.status >= 200 && djangoRes.status < 300) {
+            return res.status(djangoRes.status).json(djangoRes.data);
+          }
+          console.warn('Django associate projects status', djangoRes.status, djangoRes.data);
+        }
+      }
+    } catch (djangoErr) {
+      console.warn('Django associate projects failed, falling back:', djangoErr.message);
+    }
+
     const ctx = await resolveAssociateContext(req.user);
     const stage = String(req.query.stage || 'All').trim();
     const q = String(req.query.q || '').trim().toLowerCase();
@@ -519,6 +519,27 @@ router.get('/projects', authenticate, requireAssociate, async (req, res) => {
 
 router.get('/tasks', authenticate, requireAssociate, async (req, res) => {
   try {
+    try {
+      const { djangoEnabled, associateGet } = require('../utils/djangoClient');
+      if (djangoEnabled()) {
+        const authUserId =
+          req.user?.auth_user_id ??
+          req.user?.jwt_user_id ??
+          (String(req.user?.auth_source || req.user?.jwt_source || '').toLowerCase() === 'auth_user'
+            ? req.user?.id ?? req.user?.userId
+            : null);
+        if (authUserId != null) {
+          const djangoRes = await associateGet('/api/v1/associate/tasks/', authUserId);
+          if (djangoRes.status >= 200 && djangoRes.status < 300) {
+            return res.status(djangoRes.status).json(djangoRes.data);
+          }
+          console.warn('Django associate tasks status', djangoRes.status, djangoRes.data);
+        }
+      }
+    } catch (djangoErr) {
+      console.warn('Django associate tasks failed, falling back:', djangoErr.message);
+    }
+
     const ctx = await resolveAssociateContext(req.user);
     const items = await loadAssociateRecords(ctx);
     const tasks = buildTasks(items);
