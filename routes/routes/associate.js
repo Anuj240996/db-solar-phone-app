@@ -295,26 +295,31 @@ function buildPipeline(items) {
 }
 
 function buildOverview(items) {
-  const consumerItems = items.filter((i) =>
-    ['project', 'crm_lead', 'app_lead', 'quotation'].includes(i.source)
-  );
-  const projectItems = items.filter((i) => i.source === 'project');
+  // Prefer consumers assigned via assoc_assign_id (source=project)
+  const assignedConsumers = items.filter((i) => i.source === 'project');
+  const consumerItems =
+    assignedConsumers.length > 0
+      ? assignedConsumers
+      : items.filter((i) => ['project', 'crm_lead', 'app_lead'].includes(i.source));
+
   const totalConsumers = consumerItems.length;
-  const totalProjects = projectItems.length > 0 ? projectItems.length : consumerItems.length;
-  const completed = items.filter((i) => i.stage === 'Deployed').length;
-  const inProgress = items.filter((i) =>
+  const totalProjects = totalConsumers;
+  const completed = consumerItems.filter((i) => i.stage === 'Deployed').length;
+  const inProgress = consumerItems.filter((i) =>
     ['Site Survey', 'Quotation', 'Approval', 'Installation'].includes(i.stage)
   ).length;
-  const pending = items.filter((i) => i.stage === 'Lead' || i.stage === 'Approval').length;
-  const capacity = items.reduce((acc, i) => acc + (Number(i.capacityKwp) || 0), 0);
+  const pending = consumerItems.filter((i) => i.stage === 'Lead' || i.stage === 'Approval').length;
+  const capacity = consumerItems.reduce((acc, i) => acc + (Number(i.capacityKwp) || 0), 0);
+
   const statusMap = {};
-  for (const i of items) {
-    const key = i.status || i.stage || 'Unknown';
+  for (const i of consumerItems) {
+    const key = String(i.status || i.stage || 'Unknown');
     statusMap[key] = (statusMap[key] || 0) + 1;
   }
   const statusBreakdown = Object.entries(statusMap)
     .map(([status, count]) => ({ status, count }))
     .sort((a, b) => b.count - a.count);
+
   return {
     totalProjects,
     totalConsumers,
@@ -325,6 +330,7 @@ function buildOverview(items) {
     awaitingAction: pending,
     totalCapacityKwp: Math.round(capacity * 100) / 100,
     statusBreakdown,
+    filter: 'customer.assoc_assign_id',
   };
 }
 
