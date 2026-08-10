@@ -28,10 +28,12 @@ const router = express.Router();
 /**
  * Ensure the authenticated session may access this customer/project.
  * Returns { customer } or { error, message }.
+ * Associates may access customers where assoc_assign_id matches their auth_user id.
  */
 async function assertProjectAccess(req, ctx, projectId) {
   const customerResult = await pool.query(
-    `SELECT cust_id, new_customer_id, consumer, comp_name, first_name, last_name
+    `SELECT cust_id, new_customer_id, consumer, comp_name, first_name, last_name,
+            assoc_assign_id
      FROM customer
      WHERE cust_id = $1
      LIMIT 1`,
@@ -53,9 +55,34 @@ async function assertProjectAccess(req, ctx, projectId) {
     }
   }
   if (!hasAccess) {
+    hasAccess = isAssociateAssignedToCustomer(req, customer);
+  }
+  if (!hasAccess) {
     return { error: 403, message: 'Project not linked to your account' };
   }
   return { customer };
+}
+
+/** Associate JWT may view customers assigned via customer.assoc_assign_id. */
+function isAssociateAssignedToCustomer(req, customer) {
+  const role = String(req.user?.role || req.user?.jwt_role || '').toLowerCase();
+  if (role !== 'associate') return false;
+  const assigned =
+    customer.assoc_assign_id != null ? parseInt(customer.assoc_assign_id, 10) : NaN;
+  if (Number.isNaN(assigned)) return false;
+
+  const candidateIds = new Set();
+  const push = (v) => {
+    const n = parseInt(v, 10);
+    if (!Number.isNaN(n)) candidateIds.add(n);
+  };
+  push(req.user?.auth_user_id);
+  push(req.user?.jwt_user_id);
+  if (String(req.user?.auth_source || req.user?.jwt_source || '').toLowerCase() === 'auth_user') {
+    push(req.user?.id);
+    push(req.user?.userId);
+  }
+  return candidateIds.has(assigned);
 }
 
 /** Metadata only (no PDF bytes) for a consumer's release/agreement docs. */
@@ -865,19 +892,6 @@ async function buildMsebDetailsForCustomer(customer, customerResultRow = null) {
 // Get all projects for authenticated customer
 router.get('/', authenticate, async (req, res) => {
   try {
-    try {
-      const { djangoEnabled, consumerGet } = require('../utils/djangoClient');
-      if (djangoEnabled()) {
-        const djangoRes = await consumerGet(req, '/api/v1/projects/');
-        if (djangoRes.status >= 200 && djangoRes.status < 300) {
-          res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-          return res.status(djangoRes.status).json(djangoRes.data);
-        }
-        console.warn('Django projects list status', djangoRes.status, djangoRes.data);
-      }
-    } catch (djangoErr) {
-      console.warn('Django projects list failed, falling back:', djangoErr.message);
-    }
     // Disable caching for project lists to avoid 304 Not Modified responses
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     const ctx = await getAppAccessContext(req);
@@ -957,7 +971,7 @@ router.get('/:projectId', authenticate, async (req, res) => {
       `SELECT cust_id, consumer, first_name, last_name, middle_name, 
               email, phone, address, city, state, comp_name, new_customer_id,
               qunt_solar, qunt_inv, sol_warranty, inv_warranty, com_warranty, po_date,
-              plant_capacity
+              plant_capacity, assoc_assign_id
        FROM customer
        WHERE cust_id = $1
        LIMIT 1`,
@@ -980,6 +994,9 @@ router.get('/:projectId', authenticate, async (req, res) => {
       if (linkAppUserId != null) {
         hasAccess = await isCustomerLinkedToAppUser(linkAppUserId, projectId);
       }
+    }
+    if (!hasAccess) {
+      hasAccess = isAssociateAssignedToCustomer(req, customer);
     }
     if (!hasAccess) {
       return res.status(403).json({ message: 'Project not linked to your account' });
