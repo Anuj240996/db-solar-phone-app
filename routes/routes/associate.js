@@ -25,6 +25,171 @@ const STAGE_META = [
   { stage: 'Deployed', color: 0xff059669, icon: 'verified' },
 ];
 
+const DJANGO_MEDIA_BASE = `${String(process.env.DJANGO_BASE_URL || 'https://app.db-solar.co.in').replace(/\/$/, '')}/media`;
+
+function mediaUrl(path) {
+  if (!path) return null;
+  const p = String(path).trim();
+  if (!p) return null;
+  if (p.startsWith('http://') || p.startsWith('https://')) return p;
+  return `${DJANGO_MEDIA_BASE}/${p.replace(/^\//, '')}`;
+}
+
+function normalizeSurveyStatus(status) {
+  const v = String(status || 'pending').toLowerCase();
+  if (v === 'completed') return 'Completed';
+  if (v === 'in_progress' || v === 'in progress') return 'In Progress';
+  if (v === 'scheduled' || v === 'pending' || v === 'created') return 'Pending';
+  return v ? v.charAt(0).toUpperCase() + v.slice(1) : 'Pending';
+}
+
+function mapSurveyRow(r) {
+  const kw = Number(r.recommended_size || 0);
+  const status = normalizeSurveyStatus(r.status);
+  return {
+    id: `s-${r.id}`,
+    surveyId: String(r.id),
+    source: 'survey',
+    name: r.lead_name || `Survey #${r.id}`,
+    customer: r.lead_name || `Survey #${r.id}`,
+    phone: r.lead_phone,
+    location: [r.lead_city, r.state].filter(Boolean).join(', ') || r.address || '',
+    city: r.lead_city,
+    address: r.address,
+    capacity: kw > 0 ? `${kw.toFixed(2)} kWp` : null,
+    capacityKwp: kw,
+    stage: 'Site Survey',
+    status,
+    rawStatus: r.status,
+    progress: status === 'Completed' ? 1 : status === 'In Progress' ? 0.55 : 0.2,
+    nextAction: status === 'Completed' ? 'Prepare quotation' : 'Complete survey',
+    followUp: r.scheduled_date,
+    surveyDate: r.scheduled_date,
+    completedDate: r.completed_date,
+    feasibility: r.feasibility,
+    leadId: r.lead_id,
+    roofType: r.roof_type,
+    propertyType: r.property_type,
+    createdAt: r.scheduled_date || r.created,
+  };
+}
+
+async function queryAssociateSurveys(authUserIds) {
+  if (!authUserIds.length) return [];
+  const surveys = await pool.query(
+    `SELECT s.id, s.status, s.scheduled_date, s.completed_date, s.recommended_size,
+            s.feasibility, s.panel_count, s.created, s.modified,
+            s.created_by_id, s.engineer_id, s.lead_id,
+            l.name AS lead_name, l.phone AS lead_phone, l.city AS lead_city,
+            l.address, l.state, l.roof_type, l.property_type
+     FROM surveys_survey s
+     LEFT JOIN crm_leads_lead l ON l.id = s.lead_id
+     WHERE s.created_by_id = ANY($1::int[])
+        OR s.engineer_id = ANY($1::int[])
+        OR l.assigned_to_id = ANY($1::int[])
+     ORDER BY COALESCE(s.scheduled_date, s.created) DESC NULLS LAST
+     LIMIT 200`,
+    [authUserIds]
+  ).catch(() => ({ rows: [] }));
+  return surveys.rows.map(mapSurveyRow);
+}
+
+async function loadSurveyDetailForAssociate(surveyId, authUserIds) {
+  const id = parseInt(surveyId, 10);
+  if (Number.isNaN(id)) return null;
+  const res = await pool.query(
+    `SELECT s.*,
+            l.name AS lead_name, l.phone AS lead_phone, l.email AS lead_email,
+            l.address AS lead_address, l.city AS lead_city, l.state AS lead_state,
+            l.pincode AS lead_pincode, l.property_type, l.roof_type,
+            l.electricity_bill, l.estimated_value, l.stage AS lead_stage,
+            l.assigned_to_id
+     FROM surveys_survey s
+     LEFT JOIN crm_leads_lead l ON l.id = s.lead_id
+     WHERE s.id = $1
+       AND (
+         s.created_by_id = ANY($2::int[])
+         OR s.engineer_id = ANY($2::int[])
+         OR l.assigned_to_id = ANY($2::int[])
+       )
+     LIMIT 1`,
+    [id, authUserIds]
+  );
+  if (!res.rows.length) return null;
+  const row = res.rows[0];
+  const images = await pool.query(
+    `SELECT id, image, caption, is_primary, created
+     FROM surveys_surveyimage
+     WHERE survey_id = $1
+     ORDER BY is_primary DESC, id ASC`,
+    [id]
+  ).catch(() => ({ rows: [] }));
+
+  const status = normalizeSurveyStatus(row.status);
+  return {
+    id: String(row.id),
+    surveyId: String(row.id),
+    status,
+    rawStatus: row.status,
+    scheduledDate: row.scheduled_date,
+    completedDate: row.completed_date,
+    assignedDate: row.assigned_date,
+    created: row.created,
+    modified: row.modified,
+    feasibility: row.feasibility,
+    recommendedSizeKwp: row.recommended_size != null ? Number(row.recommended_size) : null,
+    panelCount: row.panel_count,
+    inverterCapacity: row.inverter_capacity,
+    estimatedGenerationKwh: row.estimated_generation,
+    roofAreaRequired: row.roof_area_required,
+    hasShadowIssues: row.has_shadow_issues,
+    structuralFeasible: row.structural_feasible,
+    technicalNotes: row.technical_notes,
+    structureType: row.structure_type,
+    structureBackHeightFt: row.structure_back_height_ft,
+    structureFrontHeightFt: row.structure_front_height_ft,
+    structureLegCount: row.structure_leg_count,
+    structurePurlinCount: row.structure_purlin_count,
+    structureRafterCount: row.structure_rafter_count,
+    structureSolarPanelCount: row.structure_solar_panel_count,
+    structureSquarePipeCount: row.structure_square_pipe_count,
+    structureHasWalkway: row.structure_has_walkway,
+    structureHasLadder: row.structure_has_ladder,
+    buildingHeight: row.building_height,
+    lengthNorthFt: row.length_north_ft,
+    lengthSouthFt: row.length_south_ft,
+    lengthEastFt: row.length_east_ft,
+    lengthWestFt: row.length_west_ft,
+    areaUseNorth: row.area_use_north,
+    areaUseSouth: row.area_use_south,
+    areaUseEast: row.area_use_east,
+    areaUseWest: row.area_use_west,
+    lead: {
+      id: row.lead_id,
+      name: row.lead_name,
+      phone: row.lead_phone,
+      email: row.lead_email,
+      address: row.lead_address,
+      city: row.lead_city,
+      state: row.lead_state,
+      pincode: row.lead_pincode,
+      propertyType: row.property_type,
+      roofType: row.roof_type,
+      electricityBill: row.electricity_bill,
+      estimatedValue: row.estimated_value,
+      stage: row.lead_stage,
+    },
+    images: images.rows.map((img) => ({
+      id: img.id,
+      caption: img.caption,
+      isPrimary: img.is_primary,
+      url: mediaUrl(img.image),
+      path: img.image,
+    })),
+    webUrl: `${String(process.env.DJANGO_BASE_URL || 'https://app.db-solar.co.in').replace(/\/$/, '')}/new-lead/surveys/${row.id}/`,
+  };
+}
+
 function requireAssociate(req, res, next) {
   const role = String(req.user?.role || req.user?.jwt_role || '').toLowerCase();
   const name = String(req.user?.name || req.user?.username || '').toLowerCase();
