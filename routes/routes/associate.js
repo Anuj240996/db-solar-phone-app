@@ -342,41 +342,9 @@ async function loadAssociateRecords(ctx) {
     }
 
     // 4) Surveys for this staff
-    const surveys = await pool.query(
-      `SELECT s.id, s.status, s.scheduled_date, s.completed_date, s.recommended_size,
-              s.created_by_id, s.engineer_id, s.lead_id,
-              l.name AS lead_name, l.phone AS lead_phone, l.city AS lead_city
-       FROM surveys_survey s
-       LEFT JOIN crm_leads_lead l ON l.id = s.lead_id
-       WHERE s.created_by_id = ANY($1::int[])
-          OR s.engineer_id = ANY($1::int[])
-          OR l.assigned_to_id = ANY($1::int[])
-       ORDER BY COALESCE(s.scheduled_date, s.created) DESC NULLS LAST
-       LIMIT 200`,
-      [authUserIds]
-    ).catch(() => ({ rows: [] }));
-
-    for (const r of surveys.rows) {
-      const stage = String(r.status || '').toLowerCase() === 'completed' ? 'Site Survey' : 'Site Survey';
-      const kw = Number(r.recommended_size || 0);
-      push({
-        id: `s-${r.id}`,
-        source: 'survey',
-        name: r.lead_name || `Survey #${r.id}`,
-        customer: r.lead_name || `Survey #${r.id}`,
-        phone: r.lead_phone,
-        location: r.lead_city || '',
-        city: r.lead_city,
-        capacity: kw > 0 ? `${kw.toFixed(2)} kWp` : null,
-        capacityKwp: kw,
-        stage,
-        status: r.status,
-        progress: progressForStage(stage),
-        nextAction: r.status === 'completed' ? 'Prepare quotation' : 'Complete survey',
-        followUp: r.scheduled_date,
-        createdAt: r.scheduled_date || r.completed_date,
-        surveyDate: r.scheduled_date,
-      });
+    const surveyRows = await queryAssociateSurveys(authUserIds);
+    for (const item of surveyRows) {
+      push(item);
     }
     // 5) Consumers/projects assigned via customer.assoc_assign_id only
     // (do not use emp_id_id / engg_assign_id — those are employee/engineer, not associate field)
@@ -810,6 +778,38 @@ router.get('/projects', authenticate, requireAssociate, async (req, res) => {
   } catch (e) {
     console.error('associate projects error:', e);
     res.status(500).json({ message: e.message || 'Failed to load associate projects' });
+  }
+});
+
+router.get('/surveys', authenticate, requireAssociate, async (req, res) => {
+  try {
+    await ensureAssociateAuthUserColumn();
+    const ctx = await resolveAssociateContext(req.user);
+    const surveys = await queryAssociateSurveys(ctx.authUserIds || []);
+    res.json({
+      success: true,
+      count: surveys.length,
+      surveys,
+      associate: { id: ctx.appUserId, name: ctx.displayName, linkedAuthUserIds: ctx.authUserIds },
+    });
+  } catch (e) {
+    console.error('associate surveys list error:', e);
+    res.status(500).json({ message: e.message || 'Failed to load surveys' });
+  }
+});
+
+router.get('/surveys/:surveyId', authenticate, requireAssociate, async (req, res) => {
+  try {
+    await ensureAssociateAuthUserColumn();
+    const ctx = await resolveAssociateContext(req.user);
+    const detail = await loadSurveyDetailForAssociate(req.params.surveyId, ctx.authUserIds || []);
+    if (!detail) {
+      return res.status(404).json({ message: 'Survey not found or not assigned to you' });
+    }
+    res.json({ success: true, survey: detail });
+  } catch (e) {
+    console.error('associate survey detail error:', e);
+    res.status(500).json({ message: e.message || 'Failed to load survey details' });
   }
 });
 
