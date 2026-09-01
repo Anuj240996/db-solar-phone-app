@@ -522,6 +522,24 @@ router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
       tasks: tasks.slice(0, 10),
       activities,
       recentProjects,
+      overviewProjects: customerItems.map((i) => ({
+        id: i.id,
+        projectId: i.id,
+        name: i.name,
+        customer: i.customer,
+        phone: i.phone,
+        email: i.email,
+        stage: i.stage,
+        status: i.status,
+        location: i.location,
+        city: i.city,
+        capacity: i.capacity,
+        capacityKwp: i.capacityKwp,
+        progress: i.progress,
+        type: i.type,
+        source: i.source,
+        assignVia: 'associate',
+      })),
       consumers: customerItems.slice(0, 50).map((i) => ({
         id: i.id,
         name: i.name,
@@ -556,28 +574,33 @@ router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
 
 router.get('/projects', authenticate, requireAssociate, async (req, res) => {
   try {
-    try {
-      const { djangoEnabled, associateGet } = require('../utils/djangoClient');
-      if (djangoEnabled()) {
-        const authUserId =
-          req.user?.auth_user_id ??
-          req.user?.jwt_user_id ??
-          (String(req.user?.auth_source || req.user?.jwt_source || '').toLowerCase() === 'auth_user'
-            ? req.user?.id ?? req.user?.userId
-            : null);
-        if (authUserId != null) {
-          const djangoRes = await associateGet('/api/v1/associate/projects/', authUserId, {
-            stage: req.query.stage || 'All',
-            q: req.query.q || '',
-          });
-          if (djangoRes.status >= 200 && djangoRes.status < 300) {
-            return res.status(djangoRes.status).json(djangoRes.data);
+    const statusFilter = String(req.query.status || '').trim();
+    // Status-filtered lists must use customer.assoc_assign_id (same as overview cards).
+    const skipDjango = statusFilter.length > 0;
+    if (!skipDjango) {
+      try {
+        const { djangoEnabled, associateGet } = require('../utils/djangoClient');
+        if (djangoEnabled()) {
+          const authUserId =
+            req.user?.auth_user_id ??
+            req.user?.jwt_user_id ??
+            (String(req.user?.auth_source || req.user?.jwt_source || '').toLowerCase() === 'auth_user'
+              ? req.user?.id ?? req.user?.userId
+              : null);
+          if (authUserId != null) {
+            const djangoRes = await associateGet('/api/v1/associate/projects/', authUserId, {
+              stage: req.query.stage || 'All',
+              q: req.query.q || '',
+            });
+            if (djangoRes.status >= 200 && djangoRes.status < 300) {
+              return res.status(djangoRes.status).json(djangoRes.data);
+            }
+            console.warn('Django associate projects status', djangoRes.status, djangoRes.data);
           }
-          console.warn('Django associate projects status', djangoRes.status, djangoRes.data);
         }
+      } catch (djangoErr) {
+        console.warn('Django associate projects failed, falling back:', djangoErr.message);
       }
-    } catch (djangoErr) {
-      console.warn('Django associate projects failed, falling back:', djangoErr.message);
     }
 
     const ctx = await resolveAssociateContext(req.user);
@@ -587,6 +610,17 @@ router.get('/projects', authenticate, requireAssociate, async (req, res) => {
     let items = await loadCustomersByAssociate(ctx.authUserIds || []);
     if (items.length === 0) {
       items = await loadAssociateRecords(ctx);
+    }
+
+    if (statusFilter && statusFilter !== 'All') {
+      items = items.filter((i) => {
+        const s = String(i.status || '');
+        const st = String(i.stage || '');
+        if (statusFilter === 'Completed') return s === 'Completed' || st === 'Deployed';
+        if (statusFilter === 'In Progress') return s === 'In Progress';
+        if (statusFilter === 'Pending') return s === 'Pending';
+        return s.toLowerCase() === statusFilter.toLowerCase();
+      });
     }
 
     if (stage && stage !== 'All') {
