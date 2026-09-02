@@ -298,4 +298,5 @@ module.exports = {
   mapQuoteStatusToPipeline,
   progressForStage,
   associateDisplayName,
+  crmStagesForPipeline,
 };

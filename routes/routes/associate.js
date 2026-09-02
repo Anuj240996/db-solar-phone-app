@@ -7,6 +7,7 @@ const {
   mapQuoteStatusToPipeline,
   progressForStage,
   ensureAssociateAuthUserColumn,
+  crmStagesForPipeline,
 } = require('../utils/associateAccess');
 const {
   fetchCustomerResultForCustomer,
@@ -426,7 +427,7 @@ function buildPipeline(items) {
     const value = stageItems.reduce((s, i) => s + (Number(i.estimatedValue) || 0), 0);
     let insight = `${stageItems.length} projects`;
     if (meta.stage === 'Quotation' && value > 0) {
-      insight = `???${(value / 100000).toFixed(1)}L quoted`;
+      insight = `₹${(value / 100000).toFixed(1)}L quoted`;
     } else if (meta.stage === 'Lead') {
       insight = `${stageItems.length} open`;
     } else if (meta.stage === 'Site Survey') {
@@ -438,6 +439,126 @@ function buildPipeline(items) {
       insight,
       color: meta.color,
       icon: meta.icon,
+    };
+  });
+}
+
+/** Pipeline counts: CRM leads (assigned_to_id) for Lead→Approval; customers (assoc_assign_id) for Installation/Deployed. */
+async function countCrmPipelineStages(authUserIds) {
+  const counts = {
+    Lead: 0,
+    'Site Survey': 0,
+    Quotation: 0,
+    Approval: 0,
+  };
+  if (!authUserIds.length) return counts;
+
+  const res = await pool.query(
+    `SELECT LOWER(TRIM(COALESCE(stage, 'new'))) AS stage, COUNT(*)::int AS c
+     FROM crm_leads_lead
+     WHERE assigned_to_id = ANY($1::int[])
+       AND LOWER(TRIM(COALESCE(stage, ''))) NOT IN ('lost', 'rejected')
+     GROUP BY LOWER(TRIM(COALESCE(stage, 'new')))`,
+    [authUserIds]
+  ).catch(() => ({ rows: [] }));
+
+  for (const row of res.rows) {
+    const bucket = mapCrmStageToPipeline(row.stage);
+    if (counts[bucket] != null) {
+      counts[bucket] += row.c || 0;
+    }
+  }
+  return counts;
+}
+
+function countCustomerInstallDeployed(customerItems) {
+  let installation = 0;
+  let deployed = 0;
+  for (const i of customerItems) {
+    if (i.status === 'Completed' || i.stage === 'Deployed') {
+      deployed += 1;
+    } else {
+      installation += 1;
+    }
+  }
+  return { Installation: installation, Deployed: deployed };
+}
+
+async function buildAssociatePipeline(authUserIds, customerItems) {
+  const crmCounts = await countCrmPipelineStages(authUserIds);
+  const customerCounts = countCustomerInstallDeployed(customerItems);
+
+  return STAGE_META.map((meta) => {
+    let count = 0;
+    let insight = '0 projects';
+    if (meta.stage === 'Installation') {
+      count = customerCounts.Installation;
+      insight = `${count} in progress`;
+    } else if (meta.stage === 'Deployed') {
+      count = customerCounts.Deployed;
+      insight = `${count} completed`;
+    } else {
+      count = crmCounts[meta.stage] || 0;
+      if (meta.stage === 'Lead') insight = `${count} open`;
+      else if (meta.stage === 'Site Survey') insight = `${count} surveys`;
+      else if (meta.stage === 'Quotation') insight = `${count} quotes`;
+      else if (meta.stage === 'Approval') insight = `${count} converted`;
+      else insight = `${count} projects`;
+    }
+    return {
+      stage: meta.stage,
+      count,
+      insight,
+      color: meta.color,
+      icon: meta.icon,
+    };
+  });
+}
+
+/** CRM leads assigned to associate — for pipeline stage lists (Lead / Survey / Quote / Approval). */
+async function loadCrmLeadsForAssociate(authUserIds, pipelineStage) {
+  if (!authUserIds.length) return [];
+  const stages = crmStagesForPipeline(pipelineStage);
+  let query = `
+    SELECT id, name, phone, email, city, state, address, stage, assigned_to_id,
+           estimated_value, next_followup, created, property_type, roof_type,
+           electricity_bill, converted_at
+    FROM crm_leads_lead
+    WHERE assigned_to_id = ANY($1::int[])
+      AND LOWER(TRIM(COALESCE(stage, ''))) NOT IN ('lost', 'rejected')`;
+  const params = [authUserIds];
+  if (stages.length) {
+    query += ` AND LOWER(TRIM(stage)) = ANY($2::text[])`;
+    params.push(stages);
+  }
+  query += ` ORDER BY created DESC NULLS LAST LIMIT 500`;
+
+  const crm = await pool.query(query, params);
+  return crm.rows.map((r) => {
+    const stage = mapCrmStageToPipeline(r.stage);
+    return {
+      id: String(r.id),
+      source: 'crm_lead',
+      name: r.name,
+      customer: r.name,
+      phone: r.phone,
+      email: r.email,
+      city: r.city,
+      location: [r.city, r.state].filter(Boolean).join(', ') || r.address || '',
+      capacity: null,
+      capacityKwp: 0,
+      stage,
+      status: r.stage,
+      crmStage: r.stage,
+      progress: progressForStage(stage),
+      nextAction: r.converted_at ? 'Converted' : r.next_followup ? 'Follow up' : 'Continue pipeline',
+      followUp: r.next_followup,
+      convertedAt: r.converted_at,
+      createdAt: r.created,
+      estimatedValue: Number(r.estimated_value || 0),
+      propertyType: r.property_type,
+      roofType: r.roof_type,
+      bill: r.electricity_bill,
     };
   });
 }
@@ -474,10 +595,12 @@ async function loadCustomersByAssociate(authUserIds) {
         stage = 'Installation';
       } else {
         status = 'Pending';
-        stage = 'Lead';
+        stage = 'Installation';
       }
     } else if (status === 'Completed') {
       stage = 'Deployed';
+    } else if (status !== 'Completed') {
+      stage = 'Installation';
     }
 
     const name =
@@ -628,7 +751,7 @@ router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
       console.warn('associate extra records load failed:', loadErr.message);
     }
 
-    const pipeline = buildPipeline(customerItems.length ? customerItems : items);
+    const pipeline = await buildAssociatePipeline(ctx.authUserIds || [], customerItems);
     const tasks = buildTasks(items);
     const activities = buildActivities(items).slice(0, 5);
     const recentProjects = customerItems.slice(0, 8).map((i) => ({
@@ -723,6 +846,7 @@ router.get('/projects', authenticate, requireAssociate, async (req, res) => {
   try {
     const surveyIdParam = String(req.query.surveyId || '').trim();
     const statusFilter = String(req.query.status || '').trim();
+    const stageParam = String(req.query.stage || 'All').trim();
     const ctx = await resolveAssociateContext(req.user);
 
     // Full survey detail (fallback when /surveys/:id route missing on older deploys).
@@ -734,8 +858,8 @@ router.get('/projects', authenticate, requireAssociate, async (req, res) => {
       return res.json({ success: true, survey: detail });
     }
 
-    // Status-filtered lists must use customer.assoc_assign_id (same as overview cards).
-    const skipDjango = statusFilter.length > 0;
+    // CRM + customer pipeline lists must use Node BFF (not Django proxy).
+    const skipDjango = statusFilter.length > 0 || (stageParam && stageParam !== 'All');
     if (!skipDjango) {
       try {
         const { djangoEnabled, associateGet } = require('../utils/djangoClient');
@@ -762,21 +886,61 @@ router.get('/projects', authenticate, requireAssociate, async (req, res) => {
       }
     }
 
-    const stage = String(req.query.stage || 'All').trim();
+    const stage = stageParam;
     const q = String(req.query.q || '').trim().toLowerCase();
-    // Primary list: customer.assoc_assign_id for this associate
-    let items = await loadCustomersByAssociate(ctx.authUserIds || []);
-    const surveyRows = await queryAssociateSurveys(ctx.authUserIds || []);
-    const seen = new Set(items.map((i) => `${i.source}:${i.id}`));
-    for (const row of surveyRows) {
-      const key = `${row.source}:${row.id}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        items.push(row);
+    const stageKey = stage.toLowerCase();
+    let items = [];
+
+    // Lead / Site Survey / Quotation / Approval → CRM leads (assigned_to_id)
+    if (stageKey.includes('lead') || stageKey.includes('survey') || stageKey.includes('quot') || stageKey.includes('approv')) {
+      items = await loadCrmLeadsForAssociate(ctx.authUserIds || [], stage);
+      if (stageKey.includes('survey')) {
+        const surveyRows = await queryAssociateSurveys(ctx.authUserIds || []);
+        const seen = new Set(items.map((i) => `crm:${i.id}`));
+        for (const row of surveyRows) {
+          const key = `survey:${row.surveyId || row.id}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            items.push(row);
+          }
+        }
       }
-    }
-    if (items.length === 0) {
-      items = await loadAssociateRecords(ctx);
+      if (stageKey.includes('quot')) {
+        const quotes = await pool.query(
+          `SELECT id, consumer_name, consumer_mobile, consumer_address1, status,
+                  dc_capacity, final_amount, created_at, date, lead_id
+           FROM quotation_quotation
+           WHERE created_by_id = ANY($1::int[])
+              OR assigned_associate_id = ANY($1::int[])
+           ORDER BY COALESCE(created_at, date) DESC NULLS LAST
+           LIMIT 300`,
+          [ctx.authUserIds || []]
+        ).catch(() => ({ rows: [] }));
+        for (const r of quotes.rows) {
+          const kw = Number(r.dc_capacity || 0);
+          items.push({
+            id: `q-${r.id}`,
+            source: 'quotation',
+            name: r.consumer_name,
+            customer: r.consumer_name,
+            phone: r.consumer_mobile,
+            location: r.consumer_address1 || '',
+            capacity: kw > 0 ? `${kw.toFixed(2)} kWp` : null,
+            capacityKwp: kw,
+            stage: 'Quotation',
+            status: r.status,
+            progress: progressForStage('Quotation'),
+            estimatedValue: Number(r.final_amount || 0),
+          });
+        }
+      }
+    } else {
+      // Installation / Deployed / All → customer.assoc_assign_id projects
+      items = await loadCustomersByAssociate(ctx.authUserIds || []);
+      if (items.length === 0) {
+        const all = await loadAssociateRecords(ctx);
+        items = all.filter((i) => i.source === 'project');
+      }
     }
 
     if (statusFilter && statusFilter !== 'All') {
