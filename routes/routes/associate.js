@@ -118,6 +118,13 @@ async function loadSurveyDetailForAssociate(surveyId, authUserIds) {
          s.created_by_id = ANY($2::int[])
          OR s.engineer_id = ANY($2::int[])
          OR l.assigned_to_id = ANY($2::int[])
+         OR EXISTS (
+           SELECT 1 FROM customer c
+           WHERE c.assoc_assign_id = ANY($2::int[])
+             AND c.phone IS NOT NULL
+             AND l.phone IS NOT NULL
+             AND TRIM(c.phone::text) = TRIM(l.phone::text)
+         )
        )
      LIMIT 1`,
     [id, authUserIds]
@@ -714,7 +721,19 @@ router.get('/dashboard', authenticate, requireAssociate, async (req, res) => {
 
 router.get('/projects', authenticate, requireAssociate, async (req, res) => {
   try {
+    const surveyIdParam = String(req.query.surveyId || '').trim();
     const statusFilter = String(req.query.status || '').trim();
+    const ctx = await resolveAssociateContext(req.user);
+
+    // Full survey detail (fallback when /surveys/:id route missing on older deploys).
+    if (surveyIdParam) {
+      const detail = await loadSurveyDetailForAssociate(surveyIdParam, ctx.authUserIds || []);
+      if (!detail) {
+        return res.status(404).json({ message: 'Survey not found or not assigned to you' });
+      }
+      return res.json({ success: true, survey: detail });
+    }
+
     // Status-filtered lists must use customer.assoc_assign_id (same as overview cards).
     const skipDjango = statusFilter.length > 0;
     if (!skipDjango) {
@@ -743,11 +762,19 @@ router.get('/projects', authenticate, requireAssociate, async (req, res) => {
       }
     }
 
-    const ctx = await resolveAssociateContext(req.user);
     const stage = String(req.query.stage || 'All').trim();
     const q = String(req.query.q || '').trim().toLowerCase();
     // Primary list: customer.assoc_assign_id for this associate
     let items = await loadCustomersByAssociate(ctx.authUserIds || []);
+    const surveyRows = await queryAssociateSurveys(ctx.authUserIds || []);
+    const seen = new Set(items.map((i) => `${i.source}:${i.id}`));
+    for (const row of surveyRows) {
+      const key = `${row.source}:${row.id}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        items.push(row);
+      }
+    }
     if (items.length === 0) {
       items = await loadAssociateRecords(ctx);
     }
