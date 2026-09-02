@@ -87,6 +87,13 @@ async function queryAssociateSurveys(authUserIds) {
      WHERE s.created_by_id = ANY($1::int[])
         OR s.engineer_id = ANY($1::int[])
         OR l.assigned_to_id = ANY($1::int[])
+        OR EXISTS (
+          SELECT 1 FROM customer c
+          WHERE c.assoc_assign_id = ANY($1::int[])
+            AND c.phone IS NOT NULL
+            AND l.phone IS NOT NULL
+            AND TRIM(c.phone::text) = TRIM(l.phone::text)
+        )
      ORDER BY COALESCE(s.scheduled_date, s.created) DESC NULLS LAST
      LIMIT 200`,
     [authUserIds]
