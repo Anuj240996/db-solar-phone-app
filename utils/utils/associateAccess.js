@@ -237,16 +237,31 @@ async function resolveAssociateContext(reqUser) {
 }
 
 function mapCrmStageToPipeline(stage) {
-  const s = String(stage || '').toLowerCase();
-  if (['new', 'contacted', 'qualified', 'new_app', 'new_enq'].some((x) => s.includes(x))) {
-    return 'Lead';
-  }
-  if (['survey', 'site', 'visit'].some((x) => s.includes(x))) return 'Site Survey';
-  if (['quote', 'quot', 'negotiat'].some((x) => s.includes(x))) return 'Quotation';
+  const s = String(stage || '').toLowerCase().trim();
+  // Exact CRM stages from web /new-lead/ (crm_leads_lead.stage)
+  if (s === 'new' || s === 'new_app' || s === 'new_enq') return 'Lead';
+  if (s === 'survey') return 'Site Survey';
+  if (s === 'quote') return 'Quotation';
+  if (s === 'won' || s === 'converted') return 'Approval';
+  if (s === 'lost' || s === 'rejected') return 'Lead';
+  // Legacy / fuzzy values
+  if (['contacted', 'qualified'].some((x) => s.includes(x))) return 'Lead';
+  if (['site', 'visit'].some((x) => s.includes(x))) return 'Site Survey';
+  if (['quot', 'negotiat'].some((x) => s.includes(x))) return 'Quotation';
   if (['approv', 'token', 'agreement'].some((x) => s.includes(x))) return 'Approval';
   if (['install'].some((x) => s.includes(x))) return 'Installation';
-  if (['won', 'deploy', 'complete', 'live'].some((x) => s.includes(x))) return 'Deployed';
+  if (['deploy', 'complete', 'live'].some((x) => s.includes(x))) return 'Deployed';
   return 'Lead';
+}
+
+/** CRM stage value(s) for a pipeline bucket — used in SQL filters. */
+function crmStagesForPipeline(pipelineStage) {
+  const key = String(pipelineStage || '').toLowerCase();
+  if (key === 'lead' || key === 'leads') return ['new', 'new_app', 'new_enq', 'contacted', 'qualified'];
+  if (key.includes('survey')) return ['survey'];
+  if (key.includes('quot')) return ['quote'];
+  if (key.includes('approv')) return ['won', 'converted'];
+  return [];
 }
 
 function mapQuoteStatusToPipeline(status) {
