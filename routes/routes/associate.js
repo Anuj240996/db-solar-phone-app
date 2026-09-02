@@ -956,10 +956,16 @@ router.get('/projects', authenticate, requireAssociate, async (req, res) => {
 
     if (stage && stage !== 'All') {
       const needle = stage.toLowerCase() === 'survey' ? 'site survey' : stage.toLowerCase();
-      items = items.filter((i) =>
-        i.stage.toLowerCase().includes(needle) ||
-        String(i.status || '').toLowerCase().includes(needle)
-      );
+      if (needle.includes('install')) {
+        items = items.filter((i) => i.stage === 'Installation' || (i.status !== 'Completed' && i.stage !== 'Deployed'));
+      } else if (needle.includes('deploy')) {
+        items = items.filter((i) => i.status === 'Completed' || i.stage === 'Deployed');
+      } else if (!needle.includes('lead') && !needle.includes('quot') && !needle.includes('approv')) {
+        items = items.filter((i) =>
+          i.stage.toLowerCase().includes(needle) ||
+          String(i.status || '').toLowerCase().includes(needle)
+        );
+      }
     }
     if (q) {
       items = items.filter((i) =>
