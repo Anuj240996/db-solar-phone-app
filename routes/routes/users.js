@@ -227,7 +227,7 @@ router.put('/profile', authenticate, async (req, res) => {
  * Also unlinks web customer records used by /customer/view_all_cust/:
  * clears new_customer_id (link) and mobile_app_* / Doc-related link fields.
  */
-router.delete('/account', authenticate, async (req, res) => {
+async function handleDeleteAccount(req, res) {
   const client = await pool.connect();
   try {
     const resolved = await resolveProfileUser(req);
@@ -343,6 +343,11 @@ router.delete('/account', authenticate, async (req, res) => {
   } finally {
     client.release();
   }
-});
+}
+
+// Prefer POST (reliable body). Keep DELETE for compatibility.
+router.post('/account/delete', authenticate, handleDeleteAccount);
+router.delete('/account', authenticate, handleDeleteAccount);
+router.delete('/account/delete', authenticate, handleDeleteAccount);
 
 module.exports = router;
