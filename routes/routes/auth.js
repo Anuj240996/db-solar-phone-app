@@ -989,5 +989,9 @@ router.put('/profile', authenticate, async (req, res) => {
   }
 });
 
+// Backup delete-account route (same handler as /users/account/delete)
+const { handleDeleteAccountRequest } = require('../utils/deleteAppAccount');
+router.post('/delete-account', authenticate, handleDeleteAccountRequest);
+
 module.exports = router;
 
